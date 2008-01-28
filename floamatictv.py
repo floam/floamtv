@@ -9,6 +9,7 @@
 # it has told you about them. Use --pretend for a dry-run. --help for more
 # information.
 
+from __future__ import with_statement
 import sys, re, pickle, os.path, csv, simplejson as json
 from urllib import urlopen, urlencode
 from optparse import OptionParser
@@ -78,25 +79,22 @@ def get_show_info(show_name, episode=''):
    
    if result.startswith("No Show Results"):
       raise Exception, "Show %s does not exist at tvrage." % show_name
-   else:
-      showdict = dict()
-      for line in result.strip().splitlines():
-         line = line.split("@")
-         showdict[line[0]] = "^" in line[1] and line[1].split("^") or line[1]
-         
-      if episode:
-         if showdict.has_key("Episode URL"):
-            return int(re.findall(r"[\d]+", showdict["Episode URL"])[-1])
-         else: return None
-         
-      if showdict.has_key("Next Episode"):
-         showdict["Next Episode"].append(
-            get_show_info(show_name, showdict["Next Episode"][0]))   
-      if showdict.has_key("Latest Episode"):
-         showdict["Latest Episode"].append(
-            get_show_info(show_name, showdict["Latest Episode"][0]))
-       
-      return showdict
+   
+   showdict = {}
+   for line in result.strip().splitlines():
+      line = line.split("@")
+      showdict[line[0]] = line[1].split("^") if "^" in line[1] else line[1]
+      
+   if episode:
+      if showdict.has_key("Episode URL"):
+         return int(re.findall(r"[\d]+", showdict["Episode URL"])[-1])
+      else: return None
+   
+   for t in ["Latest Episode", "Next Episode"]:
+      if showdict.has_key(t):
+         showdict[t].append(
+            get_show_info(show_name, showdict[t][0]))   
+   return showdict
 
 def search_newzbin(tvids):
    query = { "searchaction": "Search",
@@ -107,10 +105,10 @@ def search_newzbin(tvids):
              "q_url": " or ".join(map(str, tvids.keys())),
              "sort": "ps_edit_date",
              "order": "asc",
-             "u_post_results_amt": "500",
+             "u_post_results_amt": 500,
              "feed": "csv" }
    tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
-   search = urlopen("http://v3.newzbin.com/search/?%s" % urlencode(query))
+   search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
    results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
    return dict([(int(r[0]), int(n)) for (r, n) in results if r])
    
@@ -120,7 +118,6 @@ def make_showdicts(shows, dontwant):
    for show in shows:
       info = get_show_info(show)
       db[info["Show Name"]] = info
-      
       for t in ["Latest Episode", "Next Episode"]:
          if info.has_key(t) and info[t][3] not in dontwant and info[t][3]:
             wq[info[t][3]] = "%s %s: %s" % (info["Show Name"],
@@ -129,28 +126,29 @@ def make_showdicts(shows, dontwant):
 
 def save_stuff(db, waitqueue, bl):
    if not options.pretend:
-      dumpfile = open(dbpath, "w")
-      json.dump([db, waitqueue, bl], dumpfile, indent=2)
-      dumpfile.close()
+      with open(dbpath, 'w') as dumpfile:
+         json.dump([db, waitqueue, bl], dumpfile, indent=2)
    
 def load_stuff():
-   if os.path.exists(dbpath):
-      dbf = open(dbpath, "r")
-      db, waitqueue, donotwant = json.load(dbf)
-      dbf.close
+   if not os.path.exists(dbpath) or options.updatedb:
+      db, waitqueue, donotwant = updatedb()
+      options.updatedb = True
+   else:
+      with open(dbpath, 'r') as dbf:
+         db, waitqueue, donotwant = json.load(dbf)
       waitqueue = dict([(int(k), v) for (k, v) in waitqueue.items()])
-   else: db, waitqueue, donotwant = {},{},[]
    return db, waitqueue, sorted(donotwant)
 
-if options.updatedb or not os.path.exists(dbpath):
+def updatedb():
    print "Creating show database, this can take a while."
-   db, waitqueue, donotwant = load_stuff()
+   options.updatedb = False # avoid recursion
+   db, wq, donotwant = load_stuff() if os.path.exists(dbpath) else {}, {}, []
    db, newqueue = make_showdicts(shows, donotwant)
-   waitqueue.update(newqueue)
-   save_stuff(db, waitqueue, donotwant)
-   options.updatedb = True
-else: 
-   db, waitqueue, donotwant = load_stuff()
+   wq.update(newqueue)
+   save_stuff(db, wq, donotwant)
+   return db, wq, donotwant
+
+db, waitqueue, donotwant = load_stuff()
 
 if options.add:
    for tvid in options.add:
@@ -161,10 +159,8 @@ if options.add:
 if options.delete:
    for tvid in options.delete:
       try:
-         title = waitqueue[tvid]
          del waitqueue[tvid]
-         if not title == "Added manually":
-            donotwant.append(tvid)
+         donotwant.append(tvid)
       except KeyError:
          print "ID %d not in waitqueue." % tvid
    save_stuff(db, waitqueue, donotwant)
@@ -176,7 +172,15 @@ if options.unblacklist:
       except ValueError:
          print "ID %d not in blacklist." % tvid
    save_stuff(db, waitqueue, donotwant)
-
+   
+if options.run:
+   nbids = search_newzbin(waitqueue)
+   for rageid in nbids:
+      enqueue(nbids[rageid])
+      del waitqueue[rageid]
+      donotwant.append(rageid)
+      save_stuff(db, waitqueue, donotwant)
+         
 if options.showwq:
    print "Episodes we're waiting for:\n"
    print " TVRage ID\tShow"
@@ -188,14 +192,6 @@ if options.showbl:
    print " TVRage ID"
    print " ========="
    print "\n".join("%8r" % tvid for tvid in donotwant)
-
-if options.run:
-   nbids = search_newzbin(waitqueue)
-   for rageid in nbids:
-      enqueue(nbids[rageid])
-      donotwant.append(rageid)
-      del waitqueue[rageid]
-      save_stuff(db, waitqueue, donotwant)
             
 if not any(options.__dict__.itervalues()):
    parser.print_help()
