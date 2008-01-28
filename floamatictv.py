@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.5
 
 # Floamatic TV Downloader (by Aaron Gyes)
 
@@ -142,7 +142,7 @@ def load_stuff():
 def updatedb():
    print "Creating show database, this can take a while."
    options.updatedb = False # avoid recursion
-   db, wq, donotwant = load_stuff() if os.path.exists(dbpath) else {}, {}, []
+   db, wq, donotwant = load_stuff() if os.path.exists(dbpath) else ({},{},[])
    db, newqueue = make_showdicts(shows, donotwant)
    wq.update(newqueue)
    save_stuff(db, wq, donotwant)
