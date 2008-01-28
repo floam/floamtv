@@ -9,7 +9,7 @@
 # it has told you about them. Use --pretend for a dry-run. --help for more
 # information.
 
-import sys, re, pickle, os.path
+import sys, re, pickle, os.path, csv, simplejson as json
 from urllib import urlopen, urlencode
 from optparse import OptionParser
 from operator import itemgetter
@@ -18,7 +18,7 @@ from xmlrpclib import ServerProxy
 
 # Configuration
 
-dbpath = os.path.expanduser("~/.showdb")
+dbpath = os.path.expanduser("~/.fshowdb")
 hellapass = "changeme"
 
 # TODO: Way more terms!
@@ -39,33 +39,30 @@ shows = ["Mythbusters", "Stargate Atlantis", "The Simpsons", "Law & Order",
 # Normal usage shouldn't require any edits past this line.
 
 parser = OptionParser(version="Floamatic TV Downloader 0.1")
+
 parser.add_option("-r", "--run", action="store_true", dest="run",
                   help="search newzbin and enqueue episodes that are ready.")
 parser.add_option("-u", "--update", action="store_true", dest="updatedb",
                   help="update show information from TVRage.")
 parser.add_option("-p", "--pretend", action="store_true", dest="pretend",
                   help="don't actually do anything -- pretend to.") 
-                  
 parser.add_option("-w", "--show-waitqueue", action="store_true",dest="showwq"
                   , help="show episodes we're waiting for")                  
 parser.add_option("-b", "--show-blacklist", action="store_true",dest="showbl"
                   , help="show episodes we're not going to queue")
-                  
 parser.add_option("-a", "--add", action="append", dest="add", type="int", 
                   help="manually add episode to the waitqueue (by TVRage ID)",
                   metavar="ID")                  
-parser.add_option("-d", "--delete", action="append", dest="delete", 
-                  help="manually delete episode from the waitqueue", metavar="ID", type="int")
-                  
+parser.add_option("-d", "--delete", action="append", dest="delete",type="int",
+                  help="manually remove episode from waitqueue", metavar="ID")
 parser.add_option("--unblacklist", action="append", dest="unblacklist", 
                   help="manually delete episode from the blacklist"
                   "ID.", metavar="ID", type="int")
-
 options, args = parser.parse_args()
 
 def enqueue(newzbinid):
    if options.pretend:
-      print "Pretending to enqueue %d." % newzbinid
+      print "Pretending to enqueue %s." % newzbinid
       return True
    else:
       hellanzb = ServerProxy("http://hellanzb:%s@localhost:8760" % hellapass)
@@ -89,7 +86,7 @@ def get_show_info(show_name, episode=''):
          
       if episode:
          if showdict.has_key("Episode URL"):
-            return int(re.findall(r"[\d]+", showdict["Episode URL"])[-1])
+            return re.findall(r"[\d]+", showdict["Episode URL"])[-1]
          else: return None
          
       if showdict.has_key("Next Episode"):
@@ -101,24 +98,21 @@ def get_show_info(show_name, episode=''):
        
       return showdict
 
-def search_newzbin(tvid):
+def search_newzbin(tvids):
    query = { "searchaction": "Search",
              "group": rules["group"],
              "category": 8,
              "u_post_larger_than": rules["min-megs"],
              "u_post_smaller_than": rules["max-megs"],
-             "q_url": tvid,
+             "q_url": " or ".join(map(str, tvids.keys())),
              "sort": "ps_edit_date",
-             "order": "desc",
-             "u_post_results_amt": "10",
+             "order": "asc",
+             "u_post_results_amt": "500",
              "feed": "csv" }
-   
+   tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
    search = urlopen("http://v3.newzbin.com/search/?%s" % urlencode(query))
-   if "text/html" in search.info():
-      raise Exception, "Too many searches"
-   search = search.read().split(',')
-   if len(search) > 1: 
-      return int(search[2].strip('"'))
+   results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
+   return dict([(r[0], n) for (r, n) in results if r])
    
 def make_showdicts(shows, dontwant):
    db, wq = {}, {}
@@ -136,13 +130,13 @@ def make_showdicts(shows, dontwant):
 def save_stuff(db, waitqueue, bl):
    if not options.pretend:
       dumpfile = open(dbpath, "w")
-      pickle.dump((db, waitqueue, bl), dumpfile, pickle.HIGHEST_PROTOCOL)
+      json.dump([db, waitqueue, bl], dumpfile, indent=2)
       dumpfile.close()
    
 def load_stuff():
    if os.path.exists(dbpath):
       dbf = open(dbpath, "r")
-      db, waitqueue, donotwant = pickle.load(dbf)
+      db, waitqueue, donotwant = json.load(dbf)
       dbf.close
    else: db, waitqueue, donotwant = {},{},[]
    return db, waitqueue, sorted(donotwant)
@@ -153,6 +147,7 @@ if options.updatedb or not os.path.exists(dbpath):
    db, newqueue = make_showdicts(shows, donotwant)
    waitqueue.update(newqueue)
    save_stuff(db, waitqueue, donotwant)
+   options.updatedb = True
 else: 
    db, waitqueue, donotwant = load_stuff()
 
@@ -185,27 +180,21 @@ if options.showwq:
    print "Episodes we're waiting for:\n"
    print " TVRage ID\tShow"
    print " =========\t===="
-   print "\n".join("%8d\t%s" % (i[0], waitqueue[i[0]]) for i in
+   print "\n".join("%8s\t%s" % (i[0], waitqueue[i[0]]) for i in
                              sorted(waitqueue.iteritems(), key=itemgetter(1)))
 if options.showbl:
    print "Episodes we will not queue:\n"
    print " TVRage ID"
    print " ========="
-   print "\n".join("%8d" % tvid for tvid in donotwant)
+   print "\n".join("%8s" % tvid for tvid in donotwant)
 
 if options.run:
-   for x in waitqueue.copy():
-      try:
-         nbid = search_newzbin(x)
-      except Exception:
-         print "Sleeping motherfuckers."
-         sleep(6)
-         nbid = search_newzbin(x)
-      if nbid:
-         if enqueue(nbid):
-            donotwant.append(x)
-            del waitqueue[x]
-            save_stuff(db, waitqueue, donotwant)
+   nbids = search_newzbin(waitqueue)
+   for rageid in nbids:
+      enqueue(nbids[rageid])
+      donotwant.append(rageid)
+      del waitqueue[rageid]
+      save_stuff(db, waitqueue, donotwant)
             
 if not any(options.__dict__.itervalues()):
    parser.print_help()
