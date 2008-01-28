@@ -86,7 +86,7 @@ def get_show_info(show_name, episode=''):
          
       if episode:
          if showdict.has_key("Episode URL"):
-            return re.findall(r"[\d]+", showdict["Episode URL"])[-1]
+            return int(re.findall(r"[\d]+", showdict["Episode URL"])[-1])
          else: return None
          
       if showdict.has_key("Next Episode"):
@@ -112,7 +112,7 @@ def search_newzbin(tvids):
    tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
    search = urlopen("http://v3.newzbin.com/search/?%s" % urlencode(query))
    results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
-   return dict([(r[0], n) for (r, n) in results if r])
+   return dict([(int(r[0]), int(n)) for (r, n) in results if r])
    
 def make_showdicts(shows, dontwant):
    db, wq = {}, {}
@@ -138,6 +138,7 @@ def load_stuff():
       dbf = open(dbpath, "r")
       db, waitqueue, donotwant = json.load(dbf)
       dbf.close
+      waitqueue = dict([(int(k), v) for (k, v) in waitqueue.items()])
    else: db, waitqueue, donotwant = {},{},[]
    return db, waitqueue, sorted(donotwant)
 
@@ -180,13 +181,13 @@ if options.showwq:
    print "Episodes we're waiting for:\n"
    print " TVRage ID\tShow"
    print " =========\t===="
-   print "\n".join("%8s\t%s" % (i[0], waitqueue[i[0]]) for i in
+   print "\n".join("%8r\t%s" % (i[0], waitqueue[i[0]]) for i in
                              sorted(waitqueue.iteritems(), key=itemgetter(1)))
 if options.showbl:
    print "Episodes we will not queue:\n"
    print " TVRage ID"
    print " ========="
-   print "\n".join("%8s" % tvid for tvid in donotwant)
+   print "\n".join("%8r" % tvid for tvid in donotwant)
 
 if options.run:
    nbids = search_newzbin(waitqueue)
