@@ -52,7 +52,8 @@ parser.add_option('-p', '--pretend', action='store_true', dest='pretend',
 parser.add_option('-s', '--show', dest='show',
                   help="show \"waitqueue\" or \"blacklist\"")
 parser.add_option('-a', '--add', action='append', dest='add', metavar='ID',
-                  help='manually add episode to the waitqueue (by TVRage ID)')                  
+                  help='manually add episode to the waitqueue (by TVRage ID)',
+                  type="int")                  
 parser.add_option('-d', '--delete', action='append', dest='delete',
                   help='manually remove episode from waitqueue', metavar='ID')
 parser.add_option('--unblacklist', action='append', dest='unblacklist', 
@@ -121,6 +122,7 @@ def search_newzbin(tvids):
    query = { 'searchaction': 'Search',
              'group': rules['group'],
              'category': 8,
+             'u_completions': 9,
              'u_post_larger_than': rules['min-megs'],
              'u_post_smaller_than': rules['max-megs'],
              'q_url': ' or '.join(map(str, tvids.keys())),
