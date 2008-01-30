@@ -10,12 +10,13 @@
 # information.
 
 from __future__ import with_statement
-import sys, re, pickle, os.path, csv, simplejson as json
+import re, os.path, csv, simplejson as json
 from urllib import urlopen, urlencode
 from optparse import OptionParser
 from operator import itemgetter
 from time import sleep
 from xmlrpclib import ServerProxy
+from fuzzydict import FuzzyDict as Fuzzy
 
 # Configuration
 
@@ -39,71 +40,72 @@ shows = ['Mythbusters', 'Stargate Atlantis', 'The Simpsons', 'Law & Order',
 
 # Normal usage shouldn't require any edits past this line.
 
-parser = OptionParser(version='Floamatic TV Downloader 0.2')
+tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
+
+parser = OptionParser()
 parser.add_option('-r', '--run', action='store_true', dest='run',
                   help='search newzbin and enqueue episodes that are ready.')
 parser.add_option('-u', '--update', action='store_true', dest='updatedb',
                   help='update show information from TVRage.')
 parser.add_option('-p', '--pretend', action='store_true', dest='pretend',
-                  help="don't actually do anything -- pretend to.") 
-parser.add_option('-w', '--show-waitqueue', action='store_true',dest='showwq',
-                  help="show episodes we're waiting for")                  
-parser.add_option('-b', '--show-blacklist', action='store_true',dest='showbl',
-                  help="show episodes we're not going to queue")
-parser.add_option('-a', '--add', action='append', dest='add', type='int', 
-                  help='manually add episode to the waitqueue (by TVRage ID)',
-                  metavar='ID')                  
-parser.add_option('-d', '--delete', action='append', dest='delete',type='int',
+                  help="don't actually do anything -- pretend to.")
+parser.add_option('-s', '--show', dest='show',
+                  help="show \"waitqueue\" or \"blacklist\"")
+parser.add_option('-a', '--add', action='append', dest='add', metavar='ID',
+                  help='manually add episode to the waitqueue (by TVRage ID)')                  
+parser.add_option('-d', '--delete', action='append', dest='delete',
                   help='manually remove episode from waitqueue', metavar='ID')
 parser.add_option('--unblacklist', action='append', dest='unblacklist', 
                   help='manually delete episode from the blacklist'
-                  'ID.', metavar='ID', type='int')
+                  'ID.', metavar='ID')
 options, args = parser.parse_args()
 
 def updatedb():
    print 'Creating show database, this can take a while.'
    options.updatedb = False # avoid recursion
-   db, wq, donotwant = load_stuff() if os.path.exists(dbpath) else ({},{},[])
-   db, newqueue = make_showdicts(shows, donotwant)
-   wq.update(newqueue)
-   save_stuff(db, wq, donotwant)
-   return db, wq, donotwant
+   
+   wq, donotwant = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
+   wq.update(make_waitqueue(shows, donotwant))
+   
+   save_stuff(wq, donotwant)
+   return wq, donotwant
 
 def get_show_info(show_name, episode=''):
+   showdict = {}
    showinfo = urlopen("http://tvrage.com/quickinfo.php?%s"
                          % urlencode({ 'show': show_name, 'ep': episode }))
    result = showinfo.read()
+
    
    if result.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
-   showdict = {}
-   for line in result.strip().splitlines():
-      line = line.split('@')
-      showdict[line[0]] = line[1].split('^') if '^' in line[1] else line[1]
-      
+   for line in result.splitlines():
+      part = line.split('@')
+      showdict[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
+
    if episode:
-      if showdict.has_key('Episode URL'):
-         return int(re.findall(r"[\d]+", showdict['Episode URL'])[-1])
-      else: return None
-   
-   for t in ['Latest Episode', 'Next Episode']:
-      if showdict.has_key(t):
-         showdict[t].append(get_show_info(show_name, showdict[t][0]))   
+      if showdict.has_key("Episode URL"):
+         tvrageid = tr.findall(showdict['Episode URL'])
+      else:
+         tvrageid = None
+         
+      showdict["ID"] = tvrageid.pop() if tvrageid else None
    return showdict
 
-def make_showdicts(shows, dontwant):
-   db, wq = {}, {}
-   
+def make_waitqueue(shows, donotwant):
+   waitqueue = {}
    for show in shows:
       info = get_show_info(show)
-      db[info['Show Name']] = info
-      for t in ['Latest Episode', 'Next Episode']:
-         if info.has_key(t) and info[t][3] not in dontwant and info[t][3]:
-            wq[info[t][3]] = "%s %s: %s" % (info['Show Name'],
-                                             info[t][0], info[t][1])
-   return db, wq
 
+      for t in ['Latest Episode', 'Next Episode']:
+         if info.has_key(t):
+            episode = get_show_info(show, info[t][0])
+            if episode["ID"] and episode["ID"] not in donotwant:
+               waitqueue[episode["ID"]] = "%s %s: %s" % ( info['Show Name'],
+                                                      info[t][0], info[t][1] )
+   return waitqueue
+      
 def enqueue(newzbinid):
    if options.pretend:
       print "Pretending to enqueue %s." % newzbinid
@@ -111,8 +113,8 @@ def enqueue(newzbinid):
    else:
       hellanzb = ServerProxy("http://hellanzb:%s@localhost:8760" % hellapass)
       log = hellanzb.enqueuenewzbin(newzbinid)['log_entries'][-1]['INFO']
-      if str(newzbinid) in log:
-         print "Enqueued %d" % newzbinid
+      if newzbinid in log:
+         print "Enqueued %r" % newzbinid
          return True
 
 def search_newzbin(tvids):
@@ -126,71 +128,74 @@ def search_newzbin(tvids):
              'order': 'asc',
              'u_post_results_amt': 500,
              'feed': 'csv' }
-   tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
    search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
    results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
-   return dict([(int(r[0]), int(n)) for (r, n) in results if r])
+   return dict([(r[0], n) for (r, n) in results if r])
 
-def save_stuff(db, waitqueue, bl):
+def save_stuff(waitqueue, blacklist):
    if not options.pretend:
       with open(dbpath, 'w') as dumpfile:
-         json.dump([db, waitqueue, bl], dumpfile, indent=2)
+         json.dump([waitqueue, blacklist], dumpfile, indent=2)
 
 def load_stuff():
    if not os.path.exists(dbpath) or options.updatedb:
-      db, waitqueue, donotwant = updatedb()
+      waitqueue, donotwant = updatedb()
       options.updatedb = True
    else:
       with open(dbpath, 'r') as dbf:
-         db, waitqueue, donotwant = json.load(dbf)
-      waitqueue = dict([(int(k), v) for (k, v) in waitqueue.items()])
-   return db, waitqueue, sorted(donotwant)
+         waitqueue, donotwant = json.load(dbf)
+      waitqueue = dict([(k, v) for (k, v) in waitqueue.items()])
+   return waitqueue, donotwant
 
+def swap(d):
+   return dict([(v, k) for (k, v) in d.iteritems()])
 
-db, waitqueue, donotwant = load_stuff()
+waitqueue, donotwant = load_stuff()
 
 if options.add:
    for tvid in options.add:
       if not waitqueue.has_key(tvid):
          waitqueue[tvid] = 'Added manually'
-   save_stuff(db, waitqueue, donotwant)
+   save_stuff(waitqueue, donotwant)
 
 if options.delete:
-   for tvid in options.delete:
+   for given in options.delete:
       try:
-         del waitqueue[tvid]
-         donotwant.append(tvid)
+         donotwant[given] = waitqueue.pop(given)
       except KeyError:
-         print "ID %d not in waitqueue." % tvid
-   save_stuff(db, waitqueue, donotwant)
+         try:
+            rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32) 
+            donotwant[rfuzzy[given]] = waitqueue.pop(rfuzzy[given])
+         except KeyError:
+            print "Couldn't find %r in waitqueue." % given
+   save_stuff(waitqueue, donotwant)
 
 if options.unblacklist:
-   for tvid in options.unblacklist:
+   for given in options.unblacklist:
       try:
-         donotwant.remove(tvid)
-      except ValueError:
-         print "ID %d not in blacklist." % tvid
-   save_stuff(db, waitqueue, donotwant)
+         del donotwant[given]
+      except KeyError:
+         try:
+            rfuzzy = Fuzzy(swap(donotwant), cutoff=0.32) 
+            del donotwant[rfuzzy[given]]
+         except KeyError:   
+            print "Couldn't find %r in blacklist." % given
+   save_stuff(waitqueue, donotwant)
 
 if options.run:
    nbids = search_newzbin(waitqueue)
    for rageid in nbids:
       enqueue(nbids[rageid])
-      del waitqueue[rageid]
-      donotwant.append(rageid)
-      save_stuff(db, waitqueue, donotwant)
+      donotwant[rageid] = waitqueue.pop(rageid)
+      save_stuff(waitqueue, donotwant)
 
-if options.showwq:
-   print "Episodes we're waiting for:\n"
+sopts = Fuzzy({"waitqueue": waitqueue, "blacklist": donotwant}, cutoff=0.2)
+if options.show in sopts:
    print " TVRage ID\tShow"
    print " =========\t===="
-   print "\n".join("%8r\t%s" % (i[0], waitqueue[i[0]]) for i in
-                             sorted(waitqueue.iteritems(), key=itemgetter(1)))
-if options.showbl:
-   print "Episodes we will not queue:\n"
-   print " TVRage ID"
-   print " ========="
-   print "\n".join("%8r" % tvid for tvid in donotwant)
+   print "\n".join("%8s\t%s" % (i[0], sopts[options.show][i[0]]) for i in
+                              sorted(sopts[options.show].iteritems(),
+                              key=itemgetter(1)))
 
 if not any(options.__dict__.itervalues()) and __name__ == '__main__':
    parser.print_help()
