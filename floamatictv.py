@@ -146,7 +146,6 @@ def load_stuff():
    else:
       with open(dbpath, 'r') as dbf:
          waitqueue, donotwant = json.load(dbf)
-      waitqueue = dict([(k, v) for (k, v) in waitqueue.items()])
    return waitqueue, donotwant
 
 def swap(d):
@@ -166,10 +165,11 @@ if options.delete:
          donotwant[given] = waitqueue.pop(given)
       except KeyError:
          try:
-            rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32) 
-            donotwant[rfuzzy[given]] = waitqueue.pop(rfuzzy[given])
+            rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32)[given]
+            donotwant[rfuzzy] = waitqueue.pop(rfuzzy)
          except KeyError:
             print "Couldn't find %r in waitqueue." % given
+            
    save_stuff(waitqueue, donotwant)
 
 if options.unblacklist:
@@ -178,10 +178,10 @@ if options.unblacklist:
          del donotwant[given]
       except KeyError:
          try:
-            rfuzzy = Fuzzy(swap(donotwant), cutoff=0.32) 
-            del donotwant[rfuzzy[given]]
+            del donotwant[Fuzzy(swap(donotwant), cutoff=0.32)[given]]
          except KeyError:   
             print "Couldn't find %r in blacklist." % given
+            
    save_stuff(waitqueue, donotwant)
 
 if options.run:
