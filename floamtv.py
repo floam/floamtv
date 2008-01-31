@@ -51,29 +51,28 @@ parser.add_option('-u', '--update', action='store_true', dest='updatedb',
 parser.add_option('-p', '--pretend', action='store_true', dest='pretend',
                   help="don't actually do anything -- pretend to.")
 parser.add_option('-s', '--show', dest='show',
-                  help="show \"waitqueue\" or \"blacklist\"")
+                  help="show \"waitqueue\" or \"gotten\"")
 parser.add_option('-a', '--add', action='append', dest='add', metavar='ID',
                   help='manually add episode to the waitqueue (by TVRage ID)',
                   type="int")                  
 parser.add_option('-d', '--delete', action='append', dest='delete',
                   help='manually remove episode from waitqueue', metavar='ID')
-parser.add_option('--unblacklist', action='append', dest='unblacklist', 
-                  help='manually delete episode from the blacklist'
+parser.add_option('--ungotten', action='append', dest='ungotten', 
+                  help='manually delete episode from the gotten list'
                   'ID.', metavar='ID')
 options, args = parser.parse_args()
 
 def updatedb():
-   print 'Creating show database, this can take a while.'
+   print 'Updating show database, this can take a while.'
    options.updatedb = False # avoid recursion
    
-   wq, donotwant = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
-   wq2, rejected = get_tvids(shows, donotwant)
+   wq, gotten = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
+   wq2, rejected = get_tvids(shows, gotten)
    wq.update(wq2)
-   
-   [donotwant.pop(ep) for ep in donotwant.copy() if ep not in rejected]
-
-   save_stuff(wq, donotwant)
-   return wq, donotwant
+   # Prune old episodes:
+   [gotten.pop(ep) for ep in gotten.copy() if ep not in rejected]
+   save_stuff(wq, gotten)
+   return wq, gotten
 
 def get_show_info(show_name, episode=''):
    showdict = {}
@@ -98,7 +97,7 @@ def get_show_info(show_name, episode=''):
       showdict["ID"] = tvrageid.pop() if tvrageid else None
    return showdict
 
-def get_tvids(shows, donotwant):
+def get_tvids(shows, gotten):
    waitqueue, rejected = {}, []
    for show in shows:
       info = get_show_info(show)
@@ -107,7 +106,7 @@ def get_tvids(shows, donotwant):
          if info.has_key(t):
             episode = get_show_info(show, info[t][0])
             if episode["ID"]:
-               if episode["ID"] not in donotwant:
+               if episode["ID"] not in gotten:
                   waitqueue[episode["ID"]] = "%s %s: %s" % (info['Show Name'],
                                                       info[t][0], info[t][1])
                else:
@@ -139,67 +138,75 @@ def search_newzbin(tvids):
              'u_post_results_amt': 500,
              'feed': 'csv' }
    search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
-   results = ((tr.findall(r[4]), r[1]) for r in csv.reader(search))
+   results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
+   
    return dict((r[0], n) for (r, n) in results if r)
 
-def save_stuff(waitqueue, blacklist):
+def save_stuff(waitqueue, gotten):
    if not options.pretend:
       with open(dbpath, 'w') as dumpfile:
-         json.dump([waitqueue, blacklist], dumpfile, indent=2)
+         json.dump([waitqueue, gotten], dumpfile, indent=2)
 
 def load_stuff():
    if not os.path.exists(dbpath) or options.updatedb:
-      waitqueue, donotwant = updatedb()
+      waitqueue, gotten = updatedb()
       options.updatedb = True
    else:
       with open(dbpath, 'r') as dbf:
-         waitqueue, donotwant = json.load(dbf)
-   return waitqueue, donotwant
+         waitqueue, gotten = json.load(dbf)
+   return waitqueue, gotten
 
 def swap(d):
    return dict((v, k) for (k, v) in d.iteritems())
 
-waitqueue, donotwant = load_stuff()
+waitqueue, gotten = load_stuff()
 
 if options.add:
    for tvid in options.add:
       if not waitqueue.has_key(tvid):
-         waitqueue[tvid] = 'Added manually'
-   save_stuff(waitqueue, donotwant)
+         waitqueue[tvid] = '(manually)'
+   save_stuff(waitqueue, gotten)
 
 if options.delete:
    for given in options.delete:
       try:
-         donotwant[given] = waitqueue.pop(given)
+         gotten[given] = waitqueue.pop(given)
       except KeyError:
          try:
             rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32)[given]
-            donotwant[rfuzzy] = waitqueue.pop(rfuzzy)
+            gotten[rfuzzy] = waitqueue.pop(rfuzzy) + " (manually)"
          except KeyError:
             print "Couldn't find %r in waitqueue." % given
             
-   save_stuff(waitqueue, donotwant)
-
-if options.unblacklist:
-   for given in options.unblacklist:
-      try:
-         del donotwant[given]
-      except KeyError:
-         try:
-            del donotwant[Fuzzy(swap(donotwant), cutoff=0.32)[given]]
-         except KeyError:   
-            print "Couldn't find %r in blacklist." % given
-            
-   save_stuff(waitqueue, donotwant)
+   save_stuff(waitqueue, gotten)
 
 if options.run:
    nbids = search_newzbin(waitqueue)
    for rageid, nbid in nbids.iteritems():
       enqueue(nbid)
-      donotwant[rageid] = waitqueue.pop(rageid)
-      save_stuff(waitqueue, donotwant)
+      gotten[rageid] = waitqueue.pop(rageid)
+      save_stuff(waitqueue, gotten)
+   oldids = search_newzbin(gotten) # (looking for fakes)
+   for rageid, title in gotten.iteritems():
+      if rageid not in oldids and not title.endswith("(manually)"):
+         print "%s was deleted from newzbin sometime after we queued" % title
+         print ' it. It was probably fake. Readding to the waitlist.'
+         options.ungotten = [rageid]
 
-sopts = Fuzzy({"waitqueue": waitqueue, "blacklist": donotwant}, cutoff=0.2)
+if options.ungotten:
+   for given in options.ungotten:
+      try:
+         del gotten[given]
+      except KeyError:
+         try:
+            del gotten[Fuzzy(swap(gotten), cutoff=0.32)[given]]
+         except KeyError:   
+            print "Couldn't find %r in gottenlist." % given
+
+   save_stuff(waitqueue, gotten)
+         
+
+sopts = Fuzzy({"waitqueue": waitqueue, "gotten": gotten}, cutoff=0.2)
 if options.show in sopts: 
    print " TVRage ID\tShow"
    print " =========\t===="
