@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-# Floamatic TV Downloader (by Aaron Gyes)
+# floamtv.py (Copyright 2008 Aaron Gyes)
+# distributed under the GPLv3. See LICENSE
 
 # Fill up the shows database with public domain TV shows that TVRage knows
 # about. Give it some rules, and it'll return newzbin report IDs of what you
@@ -66,8 +67,11 @@ def updatedb():
    options.updatedb = False # avoid recursion
    
    wq, donotwant = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
-   wq.update(make_waitqueue(shows, donotwant))
+   wq2, rejected = get_tvids(shows, donotwant)
+   wq.update(wq2)
    
+   [donotwant.pop(ep) for ep in donotwant.copy() if ep not in rejected]
+
    save_stuff(wq, donotwant)
    return wq, donotwant
 
@@ -94,18 +98,22 @@ def get_show_info(show_name, episode=''):
       showdict["ID"] = tvrageid.pop() if tvrageid else None
    return showdict
 
-def make_waitqueue(shows, donotwant):
-   waitqueue = {}
+def get_tvids(shows, donotwant):
+   waitqueue, rejected = {}, []
    for show in shows:
       info = get_show_info(show)
 
       for t in ['Latest Episode', 'Next Episode']:
          if info.has_key(t):
             episode = get_show_info(show, info[t][0])
-            if episode["ID"] and episode["ID"] not in donotwant:
-               waitqueue[episode["ID"]] = "%s %s: %s" % ( info['Show Name'],
-                                                      info[t][0], info[t][1] )
-   return waitqueue
+            if episode["ID"]:
+               if episode["ID"] not in donotwant:
+                  waitqueue[episode["ID"]] = "%s %s: %s" % (info['Show Name'],
+                                                      info[t][0], info[t][1])
+               else:
+                  rejected.append(episode["ID"])
+               
+   return waitqueue, rejected
       
 def enqueue(newzbinid):
    if options.pretend:
@@ -131,8 +139,8 @@ def search_newzbin(tvids):
              'u_post_results_amt': 500,
              'feed': 'csv' }
    search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
-   results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
-   return dict([(r[0], n) for (r, n) in results if r])
+   results = ((tr.findall(r[4]), r[1]) for r in csv.reader(search))
+   return dict((r[0], n) for (r, n) in results if r)
 
 def save_stuff(waitqueue, blacklist):
    if not options.pretend:
@@ -149,7 +157,7 @@ def load_stuff():
    return waitqueue, donotwant
 
 def swap(d):
-   return dict([(v, k) for (k, v) in d.iteritems()])
+   return dict((v, k) for (k, v) in d.iteritems())
 
 waitqueue, donotwant = load_stuff()
 
@@ -186,18 +194,17 @@ if options.unblacklist:
 
 if options.run:
    nbids = search_newzbin(waitqueue)
-   for rageid in nbids:
-      enqueue(nbids[rageid])
+   for rageid, nbid in nbids.iteritems():
+      enqueue(nbid)
       donotwant[rageid] = waitqueue.pop(rageid)
       save_stuff(waitqueue, donotwant)
 
 sopts = Fuzzy({"waitqueue": waitqueue, "blacklist": donotwant}, cutoff=0.2)
-if options.show in sopts:
+if options.show in sopts: 
    print " TVRage ID\tShow"
    print " =========\t===="
-   print "\n".join("%8s\t%s" % (i[0], sopts[options.show][i[0]]) for i in
-                              sorted(sopts[options.show].iteritems(),
-                              key=itemgetter(1)))
+   print "\n".join("%8s\t%s" % (k, v) for k, v in
+                   sorted(sopts[options.show].iteritems(), key=itemgetter(1)))
 
 if not any(options.__dict__.itervalues()) and __name__ == '__main__':
    parser.print_help()
