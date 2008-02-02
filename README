@@ -1,1 +1,105 @@
-See http://aarongyes.com/stuff/floamtv
+Latest documentation at http://aarongyes.com/stuff/floamtv
+
+Instructions
+------------
+
+Install with the setup.py script (something like `sudo ./setup.py install`.)
+If you don't have [simplejson] [4], the only required Python module, stuff
+should be smart enough to grab it for you using Python's `easy_setup`.
+
+Once installed, edit the example configuration file with your favorite text
+editor. Fill up the `shows` list with desired shows. Change the hellanzb
+password to whatever you have set. Shows must be tracked by [TVRage] [1], so
+if the script says some show doesn't exist, confirm that they've got it, and
+that you're calling it mostly the same thing as them. The searches are pretty
+fuzzy so you usually don't need to worry about getting the title right down to
+the letter. Put the script at `~/.floamtvconfig`.
+
+Run the script with the `-u` or `--updatedb` flag to have it fetch information
+about your desired shows from [TVRage] [1]. Once it's done, run the script
+with `--show waitqueue` (or `-sw` works just as well.). This should print out
+episodes that `floamtv.py` has decided we want.
+
+You'll probably want to go through and remove episodes that you've already
+got. Use the `--delete` or `-d` command, followed by part of the title or the
+ID number to remove them.
+
+Now every time you start it with `--run` or `-r`, it will search NewzBin and
+see if any of the episodes on the waitqueue are available. If they are it will
+enqueue them in hellanzb. To test that it's working without making anything
+happening or being remembered, use `--pretend` or `-p`.
+
+Here's an example session:
+
+    joeblow@computer $ pico ~/bin/floamtv.py
+    
+    joeblow@computer $ floamtv.py --update
+    Updating show database, this can take a while.
+    
+    joeblow@computer $ floamtv.py --show waitqueue
+    TVRage ID      Show
+    =========      ====
+      123456       That Crazy Cat 01x01: Meow
+      765432       Okay Show 12x03: Great Episode
+    
+    joeblow@computer $ floamtv.py -d Okay\ Show\ Great
+    
+    joeblow@computer $ floamtv.py --show waitqueue
+    TVRage ID      Show
+    =========      ====
+      123456       That Crazy Cat 01x01: Meow
+    
+    joeblow@computer $ floamtv.py --pretend --run
+    Pretending to enqueue 123456.
+
+You will want to use `cron`, or if you're an OS X user, a LaunchAgent
+property list to `--run` maybe once every fifteen minutes, and `--update` the
+information from TVRage maybe once every 12 hours.
+
+###Example using `cron`
+    *    */12 * * *   floamtv.py --update
+    */15 *    * * *   floamtv.py --run
+
+###Example using OS X 10.5's LaunchAgents
+`~/Library/LaunchAgents/floamtvupdate.plist:`
+    
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>floamtvupdate</string>
+        <key>ProgramArguments</key>
+        <array>
+                <string>/usr/local/bin/floamtv.py</string>
+                <string>-u</string>
+        </array>
+        <key>StartInterval</key>
+        <integer>43200</integer>
+    </dict>
+    </plist>
+
+`~/Library/LaunchAgents/floamtvrun.plist:`
+
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>floamtvrun</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>/usr/local/bin/floamtv.py</string>
+            <string>-r</string>
+        </array>
+        <key>StartInterval</key>
+        <integer>900</integer>
+    </dict>
+    </plist>
+
+Make sure you have hellanzb configured to be able to download NZBs from your
+newzbin account. Yes, newzbin accounts cost money. It's a number of pennies
+per week, and floamtv will probably never support using anything else. Newzbin
+posts reference the TVRage ID number, which keeps everything very robust
+because we never need to worry about matching episode names and numbers and
+getting wrong matches.

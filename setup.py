@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-from distutils.core import setup
-from os import system
+from setuptools import setup
 
 setup(name='floamtv',
       url='http://aarongyes.com/stuff/floamtv',
@@ -9,5 +8,6 @@ setup(name='floamtv',
       py_modules=['fuzzydict'],
       scripts=['floamtv.py'],
       author='Aaron Gyes',
-      author_email='floam@sh.nu'
+      author_email='floam@sh.nu',
+      install_requires=['simplejson'],
 )
