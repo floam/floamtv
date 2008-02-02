@@ -3,8 +3,3 @@ floamtvconfig
 floamtv.py
 fuzzydict.py
 setup.py
-simplejson/__init__.py
-simplejson/decoder.py
-simplejson/encoder.py
-simplejson/jsonfilter.py
-simplejson/scanner.py

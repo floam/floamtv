@@ -8,7 +8,6 @@ setup(name='floamtv',
       version='0.2bzr',
       py_modules=['fuzzydict'],
       scripts=['floamtv.py'],
-      packages=['simplejson'],
       author='Aaron Gyes',
       author_email='floam@sh.nu'
 )
