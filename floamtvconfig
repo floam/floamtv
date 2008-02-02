@@ -1,0 +1,16 @@
+{
+ "hellapass" : "changeme",
+ "rules":
+         {
+             "min-megs": 100,
+             "max-megs": 805,
+             "group": ""
+         },
+ "shows":
+         ["Mythbusters", "Stargate Atlantis", "The Simpsons", "Law & Order",
+         "Dexter", "LOST", "Heroes", "Doctor Who (2005)", "Battlestar
+         Galactica", "Dirty Jobs", "Eureka", "The Daily Show", "Prison Break",
+         "Law & Order: SVU", "Law and Order: Criminal Intent", "Numb3rs",
+         "Family Guy", "South Park", "COPS", "The Office", "House", "The
+         Colbert Report"]
+}

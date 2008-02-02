@@ -11,7 +11,7 @@
 # information.
 
 from __future__ import with_statement
-import re, os.path, csv, simplejson as json
+import sys, re, os.path, csv, simplejson as json
 from urllib import urlopen, urlencode
 from optparse import OptionParser
 from operator import itemgetter
@@ -19,27 +19,15 @@ from time import sleep
 from xmlrpclib import ServerProxy
 from fuzzydict import FuzzyDict as Fuzzy
 
-# Configuration
+dbpath = os.path.expanduser('~/.floamtvdb')
+configpath = os.path.expanduser('~/.floamtvconfig')
 
-dbpath = os.path.expanduser('~/.fshowdb')
-hellapass = 'changeme'
-
-# TODO: Way more terms!
-rules = {
-   'min-megs': 100,
-   'max-megs': 805,
-   'group': ''
-}
-
-shows = ['Mythbusters', 'Stargate Atlantis', 'The Simpsons', 'Law & Order',
-         'Dexter', 'LOST', 'Heroes', 'Doctor Who (2005)',
-         'Battlestar Galactica', 'Dirty Jobs', 'Eureka',
-         'The Daily Show', 'Prison Break', 'Law & Order: SVU',
-         'Law and Order: Criminal Intent', 'Numb3rs', 'Family Guy',
-         'South Park', 'COPS', 'The Office', 'House', 'The Colbert Report'
-]
-
-# Normal usage shouldn't require any edits past this line.
+if os.path.exists(configpath):
+   with open(configpath, 'r') as configuration:
+      config = json.load(configuration)
+else:
+   print "You need to set up a config file first. See the docs."
+   sys.exit()
 
 tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
 
@@ -67,7 +55,7 @@ def updatedb():
    options.updatedb = False # avoid recursion
    
    wq, gotten = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
-   wq2, rejected = get_tvids(shows, gotten)
+   wq2, rejected = get_tvids(config['shows'], gotten)
    wq.update(wq2)
    # Prune old episodes:
    [gotten.pop(ep) for ep in gotten.copy() if ep not in rejected]
@@ -99,7 +87,7 @@ def get_show_info(show_name, episode=''):
 
 def get_tvids(shows, gotten):
    waitqueue, rejected = {}, []
-   for show in shows:
+   for show in config['shows']:
       info = get_show_info(show)
 
       for t in ['Latest Episode', 'Next Episode']:
@@ -119,7 +107,8 @@ def enqueue(newzbinid):
       print "Pretending to enqueue %s." % newzbinid
       return True
    else:
-      hellanzb = ServerProxy("http://hellanzb:%s@localhost:8760" % hellapass)
+      hellanzb = ServerProxy("http://hellanzb:%s@localhost:8760"
+                                                        % config['hellapass'])
       log = hellanzb.enqueuenewzbin(newzbinid)['log_entries'][-1]['INFO']
       if newzbinid in log:
          print "Enqueued %r" % newzbinid
@@ -127,11 +116,11 @@ def enqueue(newzbinid):
 
 def search_newzbin(tvids):
    query = { 'searchaction': 'Search',
-             'group': rules['group'],
+             'group': config['rules']['group'],
              'category': 8,
              'u_completions': 9,
-             'u_post_larger_than': rules['min-megs'],
-             'u_post_smaller_than': rules['max-megs'],
+             'u_post_larger_than': config['rules']['min-megs'],
+             'u_post_smaller_than': config['rules']['max-megs'],
              'q_url': ' or '.join(map(str, tvids.keys())),
              'sort': 'ps_edit_date',
              'order': 'asc',
@@ -186,12 +175,16 @@ if options.run:
       enqueue(nbid)
       gotten[rageid] = waitqueue.pop(rageid)
       save_stuff(waitqueue, gotten)
-   oldids = search_newzbin(gotten) # (looking for fakes)
+   
+   oldids = search_newzbin(gotten)
    for rageid, title in gotten.iteritems():
       if rageid not in oldids and not title.endswith("(manually)"):
          print "%s was deleted from newzbin sometime after we queued" % title
-         print ' it. It was probably fake. Readding to the waitlist.'
-         options.ungotten = [rageid]
+         print ' it. It was probably fake. Readding to the waitqueue.'
+         if options.ungotten:
+            options.ungotten.append(rageid)
+         else:
+            option.ungotten = [rageid]
 
 if options.ungotten:
    for given in options.ungotten:
@@ -200,11 +193,10 @@ if options.ungotten:
       except KeyError:
          try:
             del gotten[Fuzzy(swap(gotten), cutoff=0.32)[given]]
-         except KeyError:   
+         except KeyError:
             print "Couldn't find %r in gottenlist." % given
 
    save_stuff(waitqueue, gotten)
-         
 
 sopts = Fuzzy({"waitqueue": waitqueue, "gotten": gotten}, cutoff=0.2)
 if options.show in sopts: 
