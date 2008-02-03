@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 
-from setuptools import setup
+try:
+   from setuptools import setup
+except ImportError:
+   from distutils.core import setup
 
 setup(name='floamtv',
       url='http://aarongyes.com/stuff/floamtv',
-      version='0.2bzr',
+      version='0.21bzr',
       py_modules=['fuzzydict'],
       scripts=['floamtv.py'],
       author='Aaron Gyes',
