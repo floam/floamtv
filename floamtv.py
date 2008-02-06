@@ -12,7 +12,8 @@
 
 from __future__ import with_statement
 import sys, re, os.path, csv, simplejson as json
-from urllib import urlopen, urlencode
+from urllib2 import urlopen
+from urllib import urlencode
 from optparse import OptionParser
 from operator import itemgetter
 from time import sleep
@@ -64,10 +65,11 @@ def updatedb():
 
 def get_show_info(show_name, episode=''):
    showdict = {}
+   
    showinfo = urlopen("http://tvrage.com/quickinfo.php?%s"
                          % urlencode({ 'show': show_name, 'ep': episode }))
    result = showinfo.read()
-
+   showinfo.close()
    
    if result.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
@@ -83,6 +85,7 @@ def get_show_info(show_name, episode=''):
          tvrageid = None
          
       showdict["ID"] = tvrageid.pop() if tvrageid else None
+   
    return showdict
 
 def get_tvids(shows, gotten):
@@ -184,7 +187,7 @@ if options.run:
          if options.ungotten:
             options.ungotten.append(rageid)
          else:
-            option.ungotten = [rageid]
+            options.ungotten = [rageid]
 
 if options.ungotten:
    for given in options.ungotten:
