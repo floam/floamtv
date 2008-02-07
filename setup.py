@@ -7,7 +7,7 @@ except ImportError:
 
 setup(name='floamtv',
       url='http://aarongyes.com/stuff/floamtv',
-      version='0.22',
+      version='0.23bzr',
       py_modules=['fuzzydict'],
       scripts=['floamtv.py'],
       author='Aaron Gyes',

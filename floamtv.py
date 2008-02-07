@@ -19,6 +19,7 @@ from operator import itemgetter
 from time import sleep
 from xmlrpclib import ServerProxy
 from fuzzydict import FuzzyDict as Fuzzy
+from shutil import rmtree
 
 dbpath = os.path.expanduser('~/.floamtvdb')
 configpath = os.path.expanduser('~/.floamtvconfig')
@@ -151,6 +152,18 @@ def load_stuff():
 def swap(d):
    return dict((v, k) for (k, v) in d.iteritems())
 
+if not any(options.__dict__.itervalues()) and __name__ == '__main__':
+   if "SUCCESS" in sys.argv: # We're a hellanzb handler
+         destdir = sys.argv[3]
+         for f in os.listdir(destdir):
+            if f.endswith(".zix"):
+               print >> sys.stderr, "Shit, %s is fake." % f
+               rmtree(dest)
+               break
+   else:
+      parser.print_help()
+   sys.exit()
+
 waitqueue, gotten = load_stuff()
 
 if options.add:
@@ -207,6 +220,3 @@ if options.show in sopts:
    print " =========\t===="
    print "\n".join("%8s\t%s" % (k, v) for k, v in
                    sorted(sopts[options.show].iteritems(), key=itemgetter(1)))
-
-if not any(options.__dict__.itervalues()) and __name__ == '__main__':
-   parser.print_help()
