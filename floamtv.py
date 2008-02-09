@@ -80,13 +80,8 @@ def get_show_info(show_name, episode=''):
       showdict[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
 
    if episode:
-      if showdict.has_key("Episode URL"):
-         tvrageid = tr.findall(showdict['Episode URL'])
-      else:
-         tvrageid = None
-         
-      showdict["ID"] = tvrageid.pop() if tvrageid else None
-   
+      tvrageid = showdict.get('Episode URL')
+      showdict["ID"] = tr.findall(tvrageid).pop() if tvrageid else None
    return showdict
 
 def get_tvids(shows, gotten):
@@ -168,8 +163,7 @@ waitqueue, gotten = load_stuff()
 
 if options.add:
    for tvid in options.add:
-      if not waitqueue.has_key(tvid):
-         waitqueue[tvid] = '(manually)'
+      waitqueue.setdefault(tvid, '(manually)')
    save_stuff(waitqueue, gotten)
 
 if options.delete:
@@ -179,7 +173,7 @@ if options.delete:
       except KeyError:
          try:
             rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32)[given]
-            gotten[rfuzzy] = waitqueue.pop(rfuzzy) + " (manually)"
+            gotten[rfuzzy] = "%s (manually)" % waitqueue.pop(rfuzzy)
          except KeyError:
             print "Couldn't find %r in waitqueue." % given
             
