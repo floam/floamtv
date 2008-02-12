@@ -152,8 +152,8 @@ if not any(options.__dict__.itervalues()) and __name__ == '__main__':
    if "SUCCESS" in sys.argv or "ERROR" in sys.argv: # We're a hellanzb handler
          destdir = sys.argv[3]
          for f in os.listdir(destdir):
-            if ".zix" or "password here" in f.lower():
-               shutil.rmtree(destdir)
+            if ".zix" in f.lower() or "password here" in f.lower():
+               shutil.move(destdir, "/Users/floam/.Trash/")
                break
    else:
       parser.print_help()
