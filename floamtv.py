@@ -153,7 +153,7 @@ if not any(options.__dict__.itervalues()) and __name__ == '__main__':
          destdir = sys.argv[3]
          for f in os.listdir(destdir):
             if ".zix" in f.lower() or "password here" in f.lower():
-               shutil.move(destdir, "/Users/floam/.Trash/")
+               shutil.rmtree(destdir)
                break
    else:
       parser.print_help()
