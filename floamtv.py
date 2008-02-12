@@ -11,7 +11,7 @@
 # information.
 
 from __future__ import with_statement
-import sys, re, os.path, csv, simplejson as json
+import shutil, sys, re, os.path, csv, simplejson as json
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
@@ -19,7 +19,6 @@ from operator import itemgetter
 from time import sleep
 from xmlrpclib import ServerProxy
 from fuzzydict import FuzzyDict as Fuzzy
-from shutil import rmtree
 
 dbpath = os.path.expanduser('~/.floamtvdb')
 configpath = os.path.expanduser('~/.floamtvconfig')
@@ -147,19 +146,33 @@ def load_stuff():
 def swap(d):
    return dict((v, k) for (k, v) in d.iteritems())
 
+waitqueue, gotten = load_stuff()
+
 if not any(options.__dict__.itervalues()) and __name__ == '__main__':
-   if "SUCCESS" in sys.argv: # We're a hellanzb handler
+   if "SUCCESS" in sys.argv or "ERROR" in sys.argv: # We're a hellanzb handler
          destdir = sys.argv[3]
          for f in os.listdir(destdir):
-            if f.endswith(".zix"):
-               print >> sys.stderr, "Shit, %s is fake." % f
-               rmtree(dest)
+            if ".zix" or "password here" in f.lower():
+               shutil.rmtree(destdir)
                break
    else:
       parser.print_help()
    sys.exit()
 
-waitqueue, gotten = load_stuff()
+if options.run:
+   nbids = search_newzbin(waitqueue)
+   for rageid, nbid in nbids.iteritems():
+      enqueue(nbid)
+      gotten[rageid] = waitqueue.pop(rageid)
+      save_stuff(waitqueue, gotten)
+
+   oldids = search_newzbin(gotten)
+   for rageid, title in gotten.iteritems():
+      if rageid not in oldids and not title.endswith("(manually)"):
+         print "%s was deleted from newzbin sometime after we queued" % title
+         print ' it. It was probably fake. Readding to the waitqueue.'
+         options.ungotten = [rageid]
+         options.add = [rageid]
 
 if options.add:
    for tvid in options.add:
@@ -178,23 +191,6 @@ if options.delete:
             print "Couldn't find %r in waitqueue." % given
             
    save_stuff(waitqueue, gotten)
-
-if options.run:
-   nbids = search_newzbin(waitqueue)
-   for rageid, nbid in nbids.iteritems():
-      enqueue(nbid)
-      gotten[rageid] = waitqueue.pop(rageid)
-      save_stuff(waitqueue, gotten)
-   
-   oldids = search_newzbin(gotten)
-   for rageid, title in gotten.iteritems():
-      if rageid not in oldids and not title.endswith("(manually)"):
-         print "%s was deleted from newzbin sometime after we queued" % title
-         print ' it. It was probably fake. Readding to the waitqueue.'
-         if options.ungotten:
-            options.ungotten.append(rageid)
-         else:
-            options.ungotten = [rageid]
 
 if options.ungotten:
    for given in options.ungotten:
