@@ -10,22 +10,24 @@
 # it has told you about them. Use --pretend for a dry-run. --help for more
 # information.
 
+
+'FOR ME: old_episodes | (new_episodes - old_episodes)'
+
 from __future__ import with_statement
-import shutil, sys, re, os.path, csv, simplejson as json
+import shutil, sys, re, os.path, csv, yaml
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
 from operator import itemgetter
-from time import sleep
 from xmlrpclib import ServerProxy
 from fuzzydict import FuzzyDict as Fuzzy
 
-dbpath = os.path.expanduser('~/.floamtvdb')
-configpath = os.path.expanduser('~/.floamtvconfig')
+dbpath = os.path.expanduser('~/.floamtvdb2')
+configpath = os.path.expanduser('~/.floamtvconfig2')
 
 if os.path.exists(configpath):
    with open(configpath, 'r') as configuration:
-      config = json.load(configuration)
+      config = yaml.load(configuration)
 else:
    print "You need to set up a config file first. See the docs."
    sys.exit()
@@ -51,21 +53,38 @@ parser.add_option('--ungotten', action='append', dest='ungotten',
                   'ID.', metavar='ID')
 options, args = parser.parse_args()
 
-def updatedb():
-   print 'Updating show database, this can take a while.'
-   options.updatedb = False # avoid recursion
+
+class Show(object):
+   def __init__(self, show):
+      info = get_show_info(show)
+      self.title = info["title"]
+      self.episodes = {}
+
+      for when in ['latest', 'next']:
+         if info[when]:
+            new = Episode(show, info[when])
+            self.episodes[new.tvrageid] = new
+
+   def __repr__(self):
+      return "<Show %s with episodes %s>" \
+         % (self.title, ' and '.join(map(str, self.episodes)))
    
-   wq, gotten = load_stuff() if os.path.exists(dbpath) else ( {}, {} )
-   wq2, rejected = get_tvids(config['shows'], gotten)
-   wq.update(wq2)
-   # Prune old episodes:
-   [gotten.pop(ep) for ep in gotten.copy() if ep not in rejected]
-   save_stuff(wq, gotten)
-   return wq, gotten
+class Episode(object):
+   def __init__(self, show, number):
+      info = get_show_info(show, number)
+      self.show = show
+      self.number = info.get("epnum")
+      self.title = info.get("eptitle")
+      self.airs = info.get("epairs")
+      self.tvrageid = info.get("tvrageid")
+      self.gotten = False
+
+   def __repr__(self):
+      return "<Episode %s - %s - %s (%s)>" \
+         % (self.show, self.number, self.title, self.tvrageid)
 
 def get_show_info(show_name, episode=''):
    showdict = {}
-   
    showinfo = urlopen("http://tvrage.com/quickinfo.php?%s"
                          % urlencode({ 'show': show_name, 'ep': episode }))
    result = showinfo.read()
@@ -77,29 +96,28 @@ def get_show_info(show_name, episode=''):
    for line in result.splitlines():
       part = line.split('@')
       showdict[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
+   
+   tvrageid = showdict.get("Episode URL")
+   next = showdict.get("Next Episode")
+   latest = showdict.get("Latest Episode")
+   
+   cleandict = {
+      "title": showdict["Show Name"],
+      "next": next[0] if next else None,
+      "latest": latest[0] if latest else None,
+   }
+   
+   if episode and tvrageid:
+      more = {
+         "tvrageid": int(tr.findall(tvrageid).pop()),
+         "epnum": showdict["Episode Info"][0],
+         "eptitle": showdict["Episode Info"][1],
+         "epairs": showdict["Episode Info"][2]
+      }
+      cleandict.update(more)
 
-   if episode:
-      tvrageid = showdict.get('Episode URL')
-      showdict["ID"] = tr.findall(tvrageid).pop() if tvrageid else None
-   return showdict
+   return cleandict
 
-def get_tvids(shows, gotten):
-   waitqueue, rejected = {}, []
-   for show in config['shows']:
-      info = get_show_info(show)
-
-      for t in ['Latest Episode', 'Next Episode']:
-         if info.has_key(t):
-            episode = get_show_info(show, info[t][0])
-            if episode["ID"]:
-               if episode["ID"] not in gotten:
-                  waitqueue[episode["ID"]] = "%s %s: %s" % (info['Show Name'],
-                                                      info[t][0], info[t][1])
-               else:
-                  rejected.append(episode["ID"])
-               
-   return waitqueue, rejected
-      
 def enqueue(newzbinid):
    if options.pretend:
       print "Pretending to enqueue %s." % newzbinid
@@ -129,84 +147,9 @@ def search_newzbin(tvids):
    
    return dict((r[0], n) for (r, n) in results if r)
 
-def save_stuff(waitqueue, gotten):
-   if not options.pretend:
-      with open(dbpath, 'w') as dumpfile:
-         json.dump([waitqueue, gotten], dumpfile, indent=2)
-
-def load_stuff():
-   if not os.path.exists(dbpath) or options.updatedb:
-      waitqueue, gotten = updatedb()
-      options.updatedb = True
-   else:
-      with open(dbpath, 'r') as dbf:
-         waitqueue, gotten = json.load(dbf)
-   return waitqueue, gotten
-
 def swap(d):
    return dict((v, k) for (k, v) in d.iteritems())
 
-waitqueue, gotten = load_stuff()
+shows = map(Show, config["shows"])
 
-if not any(options.__dict__.itervalues()) and __name__ == '__main__':
-   if "SUCCESS" in sys.argv or "ERROR" in sys.argv: # We're a hellanzb handler
-         destdir = sys.argv[3]
-         for f in os.listdir(destdir):
-            if ".zix" in f.lower() or "password here" in f.lower():
-               shutil.rmtree(destdir)
-               break
-   else:
-      parser.print_help()
-   sys.exit()
-
-if options.run:
-   nbids = search_newzbin(waitqueue)
-   for rageid, nbid in nbids.iteritems():
-      enqueue(nbid)
-      gotten[rageid] = waitqueue.pop(rageid)
-      save_stuff(waitqueue, gotten)
-
-   oldids = search_newzbin(gotten)
-   for rageid, title in gotten.iteritems():
-      if rageid not in oldids and not title.endswith("(manually)"):
-         print "%s was deleted from newzbin sometime after we queued" % title
-         print ' it. It was probably fake. Readding to the waitqueue.'
-         options.ungotten = [rageid]
-         options.add = [rageid]
-
-if options.add:
-   for tvid in options.add:
-      waitqueue.setdefault(tvid, '(manually)')
-   save_stuff(waitqueue, gotten)
-
-if options.delete:
-   for given in options.delete:
-      try:
-         gotten[given] = waitqueue.pop(given)
-      except KeyError:
-         try:
-            rfuzzy = Fuzzy(swap(waitqueue), cutoff=0.32)[given]
-            gotten[rfuzzy] = "%s (manually)" % waitqueue.pop(rfuzzy)
-         except KeyError:
-            print "Couldn't find %r in waitqueue." % given
-            
-   save_stuff(waitqueue, gotten)
-
-if options.ungotten:
-   for given in options.ungotten:
-      try:
-         del gotten[given]
-      except KeyError:
-         try:
-            del gotten[Fuzzy(swap(gotten), cutoff=0.32)[given]]
-         except KeyError:
-            print "Couldn't find %r in gottenlist." % given
-
-   save_stuff(waitqueue, gotten)
-
-sopts = Fuzzy({"waitqueue": waitqueue, "gotten": gotten}, cutoff=0.2)
-if options.show in sopts: 
-   print " TVRage ID\tShow"
-   print " =========\t===="
-   print "\n".join("%8s\t%s" % (k, v) for k, v in
-                   sorted(sopts[options.show].iteritems(), key=itemgetter(1)))
+print shows
