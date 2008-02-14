@@ -20,6 +20,7 @@ from urllib import urlencode
 from optparse import OptionParser
 from operator import itemgetter
 from xmlrpclib import ServerProxy
+from datetime import datetime as dt
 from fuzzydict import FuzzyDict as Fuzzy
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
@@ -54,35 +55,55 @@ parser.add_option('--ungotten', action='append', dest='ungotten',
 options, args = parser.parse_args()
 
 
-class Show(object):
+class Show(yaml.YAMLObject):
+   yaml_tag = '!Show'
    def __init__(self, show):
       info = get_show_info(show)
       self.title = info["title"]
-      self.episodes = {}
-
-      for when in ['latest', 'next']:
-         if info[when]:
-            new = Episode(show, info[when])
-            self.episodes[new.tvrageid] = new
-
+      self.episodes = dict()
+      self.update(info)
+      
+   def add(self, episode):
+      if episode and episode not in self.episodes:
+         print "Adding %s" % episode
+         self.episodes[episode] = Episode(self.title, episode)
+   
+   def update(self, rageinfo=None):
+      if not rageinfo:
+         rageinfo = get_show_info(self.title)
+      self.recent = [rageinfo['latest'], rageinfo['next']]
+      
+      for ep in self.recent:
+         self.add(ep)
+      
+      self.episodes = dict((n,e) for (n,e) in self.episodes.items()
+                      if n in self.recent)
+   
    def __repr__(self):
       return "<Show %s with episodes %s>" \
          % (self.title, ' and '.join(map(str, self.episodes)))
    
-class Episode(object):
+
+class Episode(yaml.YAMLObject):
+   yaml_tag = '!Episode'
    def __init__(self, show, number):
       info = get_show_info(show, number)
       self.show = show
       self.number = info.get("epnum")
       self.title = info.get("eptitle")
-      self.airs = info.get("epairs")
       self.tvrageid = info.get("tvrageid")
-      self.gotten = False
-
+      self.newzbinid = None
+      self.wanted = True
+      try:
+         self.airs = dt.strptime(info.get("epairs"), "%d/%b/%Y; %A, %I:%M %p")
+      except ValueError:
+         self.airs = info.get("epairs")
+   
    def __repr__(self):
       return "<Episode %s - %s - %s (%s)>" \
          % (self.show, self.number, self.title, self.tvrageid)
 
+   
 def get_show_info(show_name, episode=''):
    showdict = {}
    showinfo = urlopen("http://tvrage.com/quickinfo.php?%s"
@@ -112,10 +133,10 @@ def get_show_info(show_name, episode=''):
          "tvrageid": int(tr.findall(tvrageid).pop()),
          "epnum": showdict["Episode Info"][0],
          "eptitle": showdict["Episode Info"][1],
-         "epairs": showdict["Episode Info"][2]
+         "epairs": showdict['Episode Info'][2] + ';' + showdict['Airtime']
       }
       cleandict.update(more)
-
+   
    return cleandict
 
 def enqueue(newzbinid):
@@ -147,9 +168,20 @@ def search_newzbin(tvids):
    
    return dict((r[0], n) for (r, n) in results if r)
 
-def swap(d):
-   return dict((v, k) for (k, v) in d.iteritems())
 
-shows = map(Show, config["shows"])
+def save(tobesaved):
+   with open(dbpath, 'w') as savefile:
+      yaml.dump(shows, savefile, indent=4, default_flow_style=False)
 
-print shows
+def load():
+   with open(dbpath, 'r') as savefile:
+      return yaml.load(savefile)
+   
+if os.path.exists(dbpath):
+   shows = load()
+else:
+   shows = {}
+
+shows.update(dict((s,Show(s)) for s in config['shows'] if s not in shows))
+
+save(shows)
