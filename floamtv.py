@@ -14,14 +14,13 @@
 'FOR ME: old_episodes | (new_episodes - old_episodes)'
 
 from __future__ import with_statement
-import shutil, sys, re, os.path, csv, yaml
+import sys, re, os.path, csv, yaml
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
-from operator import itemgetter
 from xmlrpclib import ServerProxy
 from datetime import datetime as dt
-from fuzzydict import FuzzyDict as Fuzzy
+from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
 configpath = os.path.expanduser('~/.floamtvconfig2')
@@ -33,7 +32,7 @@ else:
    print "You need to set up a config file first. See the docs."
    sys.exit()
 
-tr = re.compile(r"tvrage\.com/.*/([\d]{6,8})")
+tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
 
 parser = OptionParser()
 parser.add_option('-r', '--run', action='store_true', dest='run',
@@ -42,42 +41,82 @@ parser.add_option('-u', '--update', action='store_true', dest='updatedb',
                   help='update show information from TVRage.')
 parser.add_option('-p', '--pretend', action='store_true', dest='pretend',
                   help="don't actually do anything -- pretend to.")
-parser.add_option('-s', '--show', dest='show',
-                  help="show \"waitqueue\" or \"gotten\"")
-parser.add_option('-a', '--add', action='append', dest='add', metavar='ID',
-                  help='manually add episode to the waitqueue (by TVRage ID)',
-                  type="int")                  
+parser.add_option('-s', '--status', dest='status', action='store_true',
+                  help="Print information and status stuff.")             
 parser.add_option('-d', '--delete', action='append', dest='delete',
                   help='manually remove episode from waitqueue', metavar='ID')
-parser.add_option('--ungotten', action='append', dest='ungotten', 
-                  help='manually delete episode from the gotten list'
-                  'ID.', metavar='ID')
 options, args = parser.parse_args()
 
+class Collection(yaml.YAMLObject):
+   yaml_tag = "!Collection"
+   
+   def __init__(self, sets):
+      self.shows = []
+      self.refresh(sets)
+   
+   def enqueue(self, specific=None):
+      if not specific:
+         for show in self.shows:
+            for episode in show.episodes:
+               if episode.wanted and episode.newzbinid:
+                  episode.enqueue()
+      else:
+         self[specific].enqueue()
+   
+   def refresh(self, sets):
+      if options.updatedb:
+         for show in self.shows:
+            show.update()
+      
+      shows = set()
+      for showset in sets:
+         shows.update(set(showset['shows']))
+      self.shows += [Show(s) for s in shows if s not in self]
+   
+   def report(self):
+      print """
+   Shows we're waiting for:
+   %(wanted)
+   Shows we've downloaded:
+   %(unwanted)""" % { 'wanted': 'asd', 'unwanted' :'asd' }
+   
+   def __contains__(self, cont):
+      if self.__getitem__(cont) or cont in self.shows:
+         return True
+      else:
+         return False
+   
+   def __getitem__(self, item):
+      for show in (s for s in self.shows if item in s.title):
+         return show
 
 class Show(yaml.YAMLObject):
    yaml_tag = '!Show'
    def __init__(self, show):
-      info = get_show_info(show)
-      self.title = info["title"]
-      self.episodes = dict()
+      info = tvrage_info(show)
+      self.title = show
+      self.episodes = []
       self.update(info)
       
    def add(self, episode):
-      if episode and episode not in self.episodes:
-         print "Adding %s" % episode
-         self.episodes[episode] = Episode(self.title, episode)
+      if episode and episode not in (e.number for e in self.episodes):
+         print "New episode %s %s" % (self.title, episode)
+         self.episodes.append(Episode(self.title, episode))
    
    def update(self, rageinfo=None):
       if not rageinfo:
-         rageinfo = get_show_info(self.title)
-      self.recent = [rageinfo['latest'], rageinfo['next']]
+         rageinfo = tvrage_info(self.title)
+      recent = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
-      for ep in self.recent:
+      for ep in recent:
          self.add(ep)
-      
-      self.episodes = dict((n,e) for (n,e) in self.episodes.items()
-                      if n in self.recent)
+         
+      self.episodes = [e for e in self.episodes if e.number in recent]
+   
+   def wanted(self):
+      for episode in self.episodes:
+         if episode.wanted:
+            yield episode
    
    def __repr__(self):
       return "<Show %s with episodes %s>" \
@@ -87,101 +126,108 @@ class Show(yaml.YAMLObject):
 class Episode(yaml.YAMLObject):
    yaml_tag = '!Episode'
    def __init__(self, show, number):
-      info = get_show_info(show, number)
+      info = tvrage_info(show, number)
       self.show = show
-      self.number = info.get("epnum")
-      self.title = info.get("eptitle")
-      self.tvrageid = info.get("tvrageid")
+      self.number = info['number']
+      self.title = info['title']
+      self.tvrageid = info['tvrageid']
+      self.airs = info['airs']
       self.newzbinid = None
       self.wanted = True
-      try:
-         self.airs = dt.strptime(info.get("epairs"), "%d/%b/%Y; %A, %I:%M %p")
-      except ValueError:
-         self.airs = info.get("epairs")
+   
+   def enqueue(self):
+      if self.newzbinid:
+         print "ENQUEUE %s %s" % (self.show, self.number)
+         self.wanted = False
+      else:
+         raise Exception, "Can't enqueue episode not on newzbin."
    
    def __repr__(self):
       return "<Episode %s - %s - %s (%s)>" \
          % (self.show, self.number, self.title, self.tvrageid)
-
    
-def get_show_info(show_name, episode=''):
-   showdict = {}
-   showinfo = urlopen("http://tvrage.com/quickinfo.php?%s"
-                         % urlencode({ 'show': show_name, 'ep': episode }))
+def tvrage_info(show_name, episode=''):
+   rage = clean = defaultdict(lambda: None)
+   
+   u = urlencode({'show': show_name, 'ep': episode})
+   showinfo = urlopen("http://tvrage.com/quickinfo.php?%s" % u)
    result = showinfo.read()
-   showinfo.close()
    
    if result.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
    for line in result.splitlines():
       part = line.split('@')
-      showdict[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
+      rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
-   tvrageid = showdict.get("Episode URL")
-   next = showdict.get("Next Episode")
-   latest = showdict.get("Latest Episode")
+   clean.update({
+      'title': rage['Show Name'],
+      'next': rage['Next Episode'][0] if rage['Next Episode'] else None,
+      'latest': rage['Latest Episode'][0] if rage['Latest Episode'] else None
+   })
    
-   cleandict = {
-      "title": showdict["Show Name"],
-      "next": next[0] if next else None,
-      "latest": latest[0] if latest else None,
-   }
+   if rage['Episode URL']:
+      clean.update({
+         'tvrageid': int(tr.findall(rage['Episode URL']).pop()),
+         'number': rage['Episode Info'][0],
+         'title': rage['Episode Info'][1],
+         'airs': "%s; %s" % (rage['Episode Info'][2], rage['Airtime'])
+      })
    
-   if episode and tvrageid:
-      more = {
-         "tvrageid": int(tr.findall(tvrageid).pop()),
-         "epnum": showdict["Episode Info"][0],
-         "eptitle": showdict["Episode Info"][1],
-         "epairs": showdict['Episode Info'][2] + ';' + showdict['Airtime']
-      }
-      cleandict.update(more)
+   try:
+      clean['airs'] = dt.strptime(clean['airs'], "%d/%b/%Y; %A, %I:%M %p")
+   except (ValueError, TypeError):
+      clean['airs'] = None
    
-   return cleandict
+   showinfo.close()
+   return clean
 
-def enqueue(newzbinid):
-   if options.pretend:
-      print "Pretending to enqueue %s." % newzbinid
-      return True
-   else:
-      hellanzb = ServerProxy("http://hellanzb:%s@localhost:8760"
-                                                        % config['hellapass'])
-      log = hellanzb.enqueuenewzbin(newzbinid)['log_entries'][-1]['INFO']
-      if newzbinid in log:
-         print "Enqueued %r" % newzbinid
-         return True
-
-def search_newzbin(tvids):
-   query = { 'searchaction': 'Search',
-             'group': config['rules']['group'],
-             'category': 8,
-             'u_completions': 9,
-             'u_post_larger_than': config['rules']['min-megs'],
-             'u_post_smaller_than': config['rules']['max-megs'],
-             'q_url': ' or '.join(map(str, tvids.keys())),
-             'sort': 'ps_edit_date',
-             'order': 'asc',
-             'u_post_results_amt': 500,
-             'feed': 'csv' }
-   search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
-   results = [(tr.findall(r[4]), r[1]) for r in csv.reader(search)]
-   
-   return dict((r[0], n) for (r, n) in results if r)
-
+def search_newzbin(episodes, rdict):
+      rules = defaultdict(lambda: '')
+      rules.update(rdict)
+      query = { 'searchaction': 'Search',
+                'group': rules['group'],
+                'category': 8,
+                'u_completions': 9,
+                'u_post_larger_than': rules['min-megs'],
+                'u_post_smaller_than': rules['max-megs'],
+                'q_url': ' or '.join([str(e.tvrageid) for e in episodes]),
+                'sort': 'ps_edit_date',
+                'order': 'asc',
+                'u_post_results_amt': 500,
+                'feed': 'csv' }
+      search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
+      results = dict((int(tr.findall(r[4])[0]), int(r[1]))
+                 for r in csv.reader(search))
+      search.close()
+      
+      for episode in episodes:
+         if episode.tvrageid in results:
+            episode.newzbinid = results[episode.tvrageid]
 
 def save(tobesaved):
    with open(dbpath, 'w') as savefile:
-      yaml.dump(shows, savefile, indent=4, default_flow_style=False)
+      yaml.dump(tobesaved, savefile, indent=4, default_flow_style=False)
 
 def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
-   
+
 if os.path.exists(dbpath):
-   shows = load()
+   showset = load()
+   showset.refresh(config['sets'])
 else:
-   shows = {}
+   showset = Collection(config['sets'])
 
-shows.update(dict((s,Show(s)) for s in config['shows'] if s not in shows))
+if options.run:
+   for ruleset in config['sets']:
+      episodes = []
+      for show in ruleset['shows']:
+         episodes.extend(showset[show].wanted())
+      search_newzbin(episodes, ruleset['rules'])
+      showset.enqueue()
 
-save(shows)
+if options.status:
+   showset.report()
+
+save(showset)
