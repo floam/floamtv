@@ -73,12 +73,18 @@ class Collection(yaml.YAMLObject):
          shows.update(set(showset['shows']))
       self.shows += [Show(s) for s in shows if s not in self]
    
-   def report(self):
-      print """
-   Shows we're waiting for:
-   %(wanted)
-   Shows we've downloaded:
-   %(unwanted)""" % { 'wanted': 'asd', 'unwanted' :'asd' }
+   def report(self, type='all'):
+      print "\n Episodes we want\n"\
+            " ================\n"
+      for ep in self.wanted():
+         print "  %s - %s - %s" % (ep.show, ep.title, ep.number)
+         print "   airs %s\n" % relative_datetime(ep.airs)
+   
+   def wanted(self):
+      for show in self.shows:
+         for episode in show.episodes:
+            if episode.wanted:
+               yield episode
    
    def __contains__(self, cont):
       if self.__getitem__(cont) or cont in self.shows:
@@ -113,11 +119,6 @@ class Show(yaml.YAMLObject):
          
       self.episodes = [e for e in self.episodes if e.number in recent]
    
-   def wanted(self):
-      for episode in self.episodes:
-         if episode.wanted:
-            yield episode
-   
    def __repr__(self):
       return "<Show %s with episodes %s>" \
          % (self.title, ' and '.join(map(str, self.episodes)))
@@ -146,6 +147,24 @@ class Episode(yaml.YAMLObject):
       return "<Episode %s - %s - %s (%s)>" \
          % (self.show, self.number, self.title, self.tvrageid)
    
+def relative_datetime(date, now = None):
+   # taken from <http://odondo.wordpress.com/2007/07/05/>
+   if date:
+      if not now:	now = dt.now()
+      diff = date.date() - now.date()
+   
+      if diff.days == 0:
+         return 'at ' + date.strftime("%I:%M %p")
+      elif diff.days == -1:
+         return 'at ' + date.strftime("%I:%M %p") + ' yesterday'
+      elif diff.days == 1:
+         return 'at ' + date.strftime("%I:%M %p") + ' tomorrow'
+      elif diff.days > -7:
+         return 'at ' + date.strftime("%I:%M %p %A")
+      else:
+         return 'on ' + date.strftime("%m/%d/%Y")
+   else: return "(unknown)"
+                 
 def tvrage_info(show_name, episode=''):
    rage = clean = defaultdict(lambda: None)
    
@@ -213,6 +232,7 @@ def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
+
 if os.path.exists(dbpath):
    showset = load()
    showset.refresh(config['sets'])
@@ -221,10 +241,10 @@ else:
 
 if options.run:
    for ruleset in config['sets']:
-      episodes = []
-      for show in ruleset['shows']:
-         episodes.extend(showset[show].wanted())
-      search_newzbin(episodes, ruleset['rules'])
+      want = []
+      want.extend(e for e in showset.wanted() if e.show in ruleset['shows'])
+
+      search_newzbin(want, ruleset['rules'])
       showset.enqueue()
 
 if options.status:
