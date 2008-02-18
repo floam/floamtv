@@ -69,8 +69,8 @@ class Collection(yaml.YAMLObject):
             show.update()
       
       shows = set()
-      for showset in sets:
-         shows.update(set(showset['shows']))
+      for aset in sets:
+         shows.update(set(aset['shows']))
       self.shows += [Show(s) for s in shows if s not in self]
    
    def report(self, type='all'):
@@ -80,11 +80,10 @@ class Collection(yaml.YAMLObject):
          print "  %s - %s - %s" % (ep.show, ep.title, ep.number)
          print "   airs %s\n" % relative_datetime(ep.airs)
    
-   def wanted(self):
+   def episodes(self):
       for show in self.shows:
          for episode in show.episodes:
-            if episode.wanted:
-               yield episode
+            yield episode
    
    def __contains__(self, cont):
       if self.__getitem__(cont) or cont in self.shows:
@@ -138,20 +137,34 @@ class Episode(yaml.YAMLObject):
    
    def enqueue(self):
       if self.newzbinid:
-         print "ENQUEUE %s %s" % (self.show, self.number)
-         self.wanted = False
+         hella = ServerProxy("http://hellanzb:%s@localhost:8760"
+                                 % config['hellapass'])
+         log = hella.enqueuenewzbin(self.newzbinid)['log_entries'][-1]['INFO']
+         if str(self.newzbinid) in log:
+            print "Enqueued %s - %s" % (self.show, self.number)
+            self.wanted = False
       else:
          raise Exception, "Can't enqueue episode not on newzbin."
    
-   def __repr__(self):
-      return "<Episode %s - %s - %s (%s)>" \
-         % (self.show, self.number, self.title, self.tvrageid)
+   def wasfake(self, sure=True):
+      if sure:
+         print "%s - %s was fake. Requeueing." % (self.show, self.number)
+         self.newzbinid = None
+         self.wanted = True
+      else:
+         # The post was fishy.
+         # We will check if the show is still on newzbin in 1.5 hours, and
+         # then enqueue it.
+         pass
    
-def relative_datetime(date, now = None):
+   def __repr__(self):
+      return "<Episode %s - %s - %s>" \
+         % (self.show, self.number, self.title)
+   
+def relative_datetime(date):
    # taken from <http://odondo.wordpress.com/2007/07/05/>
    if date:
-      if not now:	now = dt.now()
-      diff = date.date() - now.date()
+      diff = date.date() - dt.now().date()
    
       if diff.days == 0:
          return 'at ' + date.strftime("%I:%M %p")
@@ -201,26 +214,30 @@ def tvrage_info(show_name, episode=''):
    showinfo.close()
    return clean
 
-def search_newzbin(episodes, rdict):
+def search_newzbin(sepis, rdict):
       rules = defaultdict(lambda: '')
       rules.update(rdict)
-      query = { 'searchaction': 'Search',
+      query = urlencode({ 'searchaction': 'Search',
                 'group': rules['group'],
                 'category': 8,
                 'u_completions': 9,
                 'u_post_larger_than': rules['min-megs'],
                 'u_post_smaller_than': rules['max-megs'],
-                'q_url': ' or '.join([str(e.tvrageid) for e in episodes]),
+                'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
                 'sort': 'ps_edit_date',
                 'order': 'asc',
                 'u_post_results_amt': 500,
-                'feed': 'csv' }
-      search = urlopen("https://v3.newzbin.com/search/?%s" % urlencode(query))
+                'feed': 'csv' })
+         
+      search = urlopen("https://v3.newzbin.com/search/?%s" % query)
       results = dict((int(tr.findall(r[4])[0]), int(r[1]))
                  for r in csv.reader(search))
       search.close()
       
-      for episode in episodes:
+      for episode in sepis:
+         if episode.newzbinid and episode.tvrageid not in results:
+            episode.wasfake()
+            
          if episode.tvrageid in results:
             episode.newzbinid = results[episode.tvrageid]
 
@@ -241,10 +258,9 @@ else:
 
 if options.run:
    for ruleset in config['sets']:
-      want = []
-      want.extend(e for e in showset.wanted() if e.show in ruleset['shows'])
+      inset = [e for e in showset.episodes() if e.show in ruleset['shows']]
 
-      search_newzbin(want, ruleset['rules'])
+      search_newzbin(inset, ruleset['rules'])
       showset.enqueue()
 
 if options.status:
