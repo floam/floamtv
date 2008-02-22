@@ -3,23 +3,13 @@
 # floamtv.py (Copyright 2008 Aaron Gyes)
 # distributed under the GPLv3. See LICENSE
 
-# Fill up the shows database with public domain TV shows that TVRage knows
-# about. Give it some rules, and it'll return newzbin report IDs of what you
-# want. Use cron to update the database (-u) once or twice per day and search
-# newzbin with it as often as you like. Shows are considered downloaded once
-# it has told you about them. Use --pretend for a dry-run. --help for more
-# information.
-
-
-'FOR ME: old_episodes | (new_episodes - old_episodes)'
-
 from __future__ import with_statement
-import sys, re, os.path, csv, yaml
+import sys, re, os.path, csv, yaml, time, sched, signal
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
 from xmlrpclib import ServerProxy
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
 from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
@@ -29,7 +19,7 @@ if os.path.exists(configpath):
    with open(configpath, 'r') as configuration:
       config = yaml.load(configuration)
 else:
-   print "You need to set up a config file first. See the docs."
+   print 'You need to set up a config file first. See the docs.'
    sys.exit()
 
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
@@ -39,61 +29,65 @@ parser.add_option('-r', '--run', action='store_true', dest='run',
                   help='search newzbin and enqueue episodes that are ready.')
 parser.add_option('-u', '--update', action='store_true', dest='updatedb',
                   help='update show information from TVRage.')
-parser.add_option('-p', '--pretend', action='store_true', dest='pretend',
-                  help="don't actually do anything -- pretend to.")
+parser.add_option('--unwant', dest='unwant',
+                  help='Set an episode to not download when available.')
 parser.add_option('-s', '--status', dest='status', action='store_true',
-                  help="Print information and status stuff.")             
-parser.add_option('-d', '--delete', action='append', dest='delete',
-                  help='manually remove episode from waitqueue', metavar='ID')
+                  help='Print information and status stuff.')
 options, args = parser.parse_args()
 
 class Collection(yaml.YAMLObject):
-   yaml_tag = "!Collection"
+   yaml_tag = '!Collection'
    
    def __init__(self, sets):
       self.shows = []
       self.refresh(sets)
    
-   def enqueue(self, specific=None):
-      if not specific:
-         for show in self.shows:
-            for episode in show.episodes:
-               if episode.wanted and episode.newzbinid:
-                  episode.enqueue()
-      else:
-         self[specific].enqueue()
+   def enqueue(self):
+      for show in self.shows:
+         for ep in show.episodes:
+            if ep.wanted and ep.newzbinid:
+               if ep.airs and (ep.airs - dt.now()) > timedelta(hours=4):
+                  ep.wasfake(sure=False)
+               else:
+                  ep.enqueue()
    
    def refresh(self, sets):
-      if options.updatedb:
-         for show in self.shows:
-            show.update()
+      print 'Getting new data from TVRage.'
+      for show in self.shows:
+         show.update()
       
       shows = set()
       for aset in sets:
          shows.update(set(aset['shows']))
-      self.shows += [Show(s) for s in shows if s not in self]
+      
+      alreadyhave = [t.title for t in self.shows]
+      self.shows += [Show(s) for s in shows if s not in alreadyhave]
+      
+      self._save()
+      scheduler.enter(60*60*2, 1, showset.refresh, (sets,))
    
    def report(self, type='all'):
       print "\n Episodes we want\n"\
             " ================\n"
-      for ep in self.wanted():
-         print "  %s - %s - %s" % (ep.show, ep.title, ep.number)
-         print "   airs %s\n" % relative_datetime(ep.airs)
+      for show in self.shows:
+         for ep in (e for e in show.episodes if e.wanted):
+            print "  %s\n   %s\n" % (ep, relative_datetime(ep.airs))
    
    def episodes(self):
       for show in self.shows:
          for episode in show.episodes:
             yield episode
    
-   def __contains__(self, cont):
-      if self.__getitem__(cont) or cont in self.shows:
-         return True
-      else:
-         return False
+   def _save(self):
+      with open(dbpath, 'w') as savefile:
+         yaml.dump(self, savefile, indent=4, default_flow_style=False)
    
    def __getitem__(self, item):
-      for show in (s for s in self.shows if item in s.title):
-         return show
+      for episodes in (s.episodes for s in self.shows):
+         for episode in (e for e in episodes if humanize(e.tvrageid) == item):
+            return episode
+      else:
+         raise KeyError, "No episode with id %s" % item
 
 class Show(yaml.YAMLObject):
    yaml_tag = '!Show'
@@ -102,11 +96,13 @@ class Show(yaml.YAMLObject):
       self.title = show
       self.episodes = []
       self.update(info)
-      
+   
    def add(self, episode):
       if episode and episode not in (e.number for e in self.episodes):
-         print "New episode %s %s" % (self.title, episode)
-         self.episodes.append(Episode(self.title, episode))
+         ep = Episode(self.title, episode)
+         if ep.tvrageid:
+            self.episodes.append(ep)
+            print "New episode %s" % ep
    
    def update(self, rageinfo=None):
       if not rageinfo:
@@ -115,13 +111,13 @@ class Show(yaml.YAMLObject):
       
       for ep in recent:
          self.add(ep)
-         
+      
       self.episodes = [e for e in self.episodes if e.number in recent]
    
    def __repr__(self):
       return "<Show %s with episodes %s>" \
          % (self.title, ' and '.join(map(str, self.episodes)))
-   
+
 
 class Episode(yaml.YAMLObject):
    yaml_tag = '!Episode'
@@ -135,49 +131,44 @@ class Episode(yaml.YAMLObject):
       self.newzbinid = None
       self.wanted = True
    
-   def enqueue(self):
-      if self.newzbinid:
-         hella = ServerProxy("http://hellanzb:%s@localhost:8760"
-                                 % config['hellapass'])
-         log = hella.enqueuenewzbin(self.newzbinid)['log_entries'][-1]['INFO']
-         if str(self.newzbinid) in log:
-            print "Enqueued %s - %s" % (self.show, self.number)
+   def enqueue(self, allowiffy=False):
+      if self.newzbinid and self.wanted != 'later' or allowiffy:
+         hella = ServerProxy("http://hellanzb:%s@%s:8760"
+                         % (config['hellanzb-pass'], config['hellanzb-host']))
+         hella.enqueuenewzbin(self.newzbinid)
+         
+         checklog = lambda: hella.status()['log_entries'][-1].get('INFO')
+         while checklog().startswith('Downloading'):
+            time.sleep(0.75)
+         log = checklog()
+         
+         if log.startswith('Found new') and str(self.newzbinid) in log:
+            print "Enqueued %s" % self
             self.wanted = False
-      else:
-         raise Exception, "Can't enqueue episode not on newzbin."
+         else:
+            print "Enqueue of %s failed" % self
+         
+         self._save()
    
    def wasfake(self, sure=True):
       if sure:
-         print "%s - %s was fake. Requeueing." % (self.show, self.number)
+         print "%s was fake. Requeueing." % self
          self.newzbinid = None
          self.wanted = True
-      else:
-         # The post was fishy.
-         # We will check if the show is still on newzbin in 1.5 hours, and
-         # then enqueue it.
-         pass
+      elif self.wanted != 'later':
+         print "%s is too early. Will confirm in an hour." % self
+         self.wanted = 'later'
+         scheduler.enter(60*60*1.5, 1, self.enqueue, (True,))
    
    def __repr__(self):
       return "<Episode %s - %s - %s>" \
          % (self.show, self.number, self.title)
    
-def relative_datetime(date):
-   # taken from <http://odondo.wordpress.com/2007/07/05/>
-   if date:
-      diff = date.date() - dt.now().date()
+   def __str__(self):
+      return "%s - %s - %s, [%s]" % (self.show, self.number, self.title,
+                                     humanize(self.tvrageid))
    
-      if diff.days == 0:
-         return 'at ' + date.strftime("%I:%M %p")
-      elif diff.days == -1:
-         return 'at ' + date.strftime("%I:%M %p") + ' yesterday'
-      elif diff.days == 1:
-         return 'at ' + date.strftime("%I:%M %p") + ' tomorrow'
-      elif diff.days > -7:
-         return 'at ' + date.strftime("%I:%M %p %A")
-      else:
-         return 'on ' + date.strftime("%m/%d/%Y")
-   else: return "(unknown)"
-                 
+
 def tvrage_info(show_name, episode=''):
    rage = clean = defaultdict(lambda: None)
    
@@ -228,7 +219,7 @@ def search_newzbin(sepis, rdict):
                 'order': 'asc',
                 'u_post_results_amt': 500,
                 'feed': 'csv' })
-         
+      
       search = urlopen("https://v3.newzbin.com/search/?%s" % query)
       results = dict((int(tr.findall(r[4])[0]), int(r[1]))
                  for r in csv.reader(search))
@@ -237,33 +228,66 @@ def search_newzbin(sepis, rdict):
       for episode in sepis:
          if episode.newzbinid and episode.tvrageid not in results:
             episode.wasfake()
-            
+         
          if episode.tvrageid in results:
             episode.newzbinid = results[episode.tvrageid]
 
-def save(tobesaved):
-   with open(dbpath, 'w') as savefile:
-      yaml.dump(tobesaved, savefile, indent=4, default_flow_style=False)
+def humanize(q):
+   'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
+   if q < 0: raise ValueError, 'must supply a positive integer'
+   letters = '0123456789abcdefghjkmnpqrstuvwxyz'
+   converted = []
+   while q != 0:
+       q, r = divmod(q, 33)
+       converted.insert(0, letters[r])
+   return ''.join(converted)
+
+def relative_datetime(date):
+   # taken from <http://odondo.wordpress.com/2007/07/05/>, thanks!
+   if date:
+      diff = date.date() - dt.now().date()
+      
+      if diff.days == 0:
+         return "airs %s today" % date.strftime("%I:%M %p")
+      elif diff.days == -1:
+         return "aired %s yesterday" % date.strftime("%I:%M %p")
+      elif diff.days < -1:
+         return "aired on %s" % date.strftime("%m/%d/%Y")
+      elif diff.days == 1:
+         return "airs %s tomorrow" % date.strftime("%I:%M %p")
+      elif diff.days > -7:
+         return "airs %s" % date.strftime("%I:%M %p %A")
+      else:
+         return "airs on %s" % date.strftime("%m/%d/%Y")
+   else: return 'Unknown Airtime'
 
 def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
+def newreports(*args):
+   print 'Looking for new shows on newzbin.'
+   for ruleset in config['sets']:
+      inset = [e for e in showset.episodes() if e.show in ruleset['shows']]
+      search_newzbin(inset, ruleset['rules'])
+      showset.enqueue()
+   scheduler.enter(60*8, 1, newreports, args)
 
 if os.path.exists(dbpath):
    showset = load()
-   showset.refresh(config['sets'])
 else:
    showset = Collection(config['sets'])
 
 if options.run:
-   for ruleset in config['sets']:
-      inset = [e for e in showset.episodes() if e.show in ruleset['shows']]
+   scheduler = sched.scheduler(time.time, time.sleep)
+   
+   showset.refresh(config['sets'])
+   newreports()
+   
+   scheduler.run()
 
-      search_newzbin(inset, ruleset['rules'])
-      showset.enqueue()
+elif options.unwant:
+   print showset[options.unwant]
 
-if options.status:
+elif options.status:
    showset.report()
-
-save(showset)
