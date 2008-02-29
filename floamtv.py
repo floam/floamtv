@@ -14,15 +14,8 @@ from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
 configpath = os.path.expanduser('~/.floamtvconfig2')
-
-if os.path.exists(configpath):
-   with open(configpath, 'r') as configuration:
-      config = yaml.load(configuration)
-else:
-   print 'You need to set up a config file first. See the docs.'
-   sys.exit()
-
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
+scheduler = sched.scheduler(time.time, time.sleep)
 
 parser = OptionParser()
 parser.add_option('-r', '--run', action='store_true', dest='run',
@@ -33,7 +26,17 @@ parser.add_option('--unwant', dest='unwant',
                   help='Set an episode to not download when available.')
 parser.add_option('-s', '--status', dest='status', action='store_true',
                   help='Print information and status stuff.')
+parser.add_option('--url', dest='url', action='store_true')
 options, args = parser.parse_args()
+
+
+if os.path.exists(configpath):
+   with open(configpath, 'r') as configuration:
+      config = yaml.load(configuration)
+else:
+   print 'You need to set up a config file first. See the docs.'
+   sys.exit()
+   
 
 class Collection(yaml.YAMLObject):
    yaml_tag = '!Collection'
@@ -41,15 +44,6 @@ class Collection(yaml.YAMLObject):
    def __init__(self, sets):
       self.shows = []
       self.refresh(sets)
-   
-   def enqueue(self):
-      for show in self.shows:
-         for ep in show.episodes:
-            if ep.wanted and ep.newzbinid:
-               if ep.airs and (ep.airs - dt.now()) > timedelta(hours=4):
-                  ep.wasfake(sure=False)
-               else:
-                  ep.enqueue()
    
    def refresh(self, sets):
       print 'Getting new data from TVRage.'
@@ -64,27 +58,43 @@ class Collection(yaml.YAMLObject):
       self.shows += [Show(s) for s in shows if s not in alreadyhave]
       
       self._save()
-      scheduler.enter(60*60*2, 1, showset.refresh, (sets,))
+      scheduler.enter(60*60*2, 1, self.refresh, (sets,))
    
-   def report(self, type='all'):
+   def print_status(self, type='all'):
       print "\n Episodes we want\n"\
             " ================\n"
-      for show in self.shows:
-         for ep in (e for e in show.episodes if e.wanted):
+      for ep in self._episodes():
+         if ep.wanted:
             print "  %s\n   %s\n" % (ep, relative_datetime(ep.airs))
    
-   def episodes(self):
+   def look_on_newzbin(self, *args):
+      print 'Looking for new shows on newzbin.'
+      for ruleset in config['sets']:
+         inset = [e for e in self._episodes() if e.show in ruleset['shows']]
+         search_newzbin(inset, ruleset['rules'])
+      
+      for ep in self._episodes():
+         if ep.wanted and ep.newzbinid:
+            if ep.airs and (ep.airs - dt.now()) > timedelta(hours=4):
+               ep.was_fake(sure=False)
+            else:
+               ep.enqueue()
+      
+      self._save()
+      scheduler.enter(60*8, 1, self.look_on_newzbin, args)
+   
+   def _save(self):
+      with open(dbpath, 'w') as savefile:
+         yaml.dump (self, savefile, indent=4, default_flow_style=False)
+   
+   def _episodes(self):
       for show in self.shows:
          for episode in show.episodes:
             yield episode
    
-   def _save(self):
-      with open(dbpath, 'w') as savefile:
-         yaml.dump(self, savefile, indent=4, default_flow_style=False)
-   
    def __getitem__(self, item):
-      for episodes in (s.episodes for s in self.shows):
-         for episode in (e for e in episodes if humanize(e.tvrageid) == item):
+      for episode in self._episodes():
+         if humanize(episode.tvrageid) == item:
             return episode
       else:
          raise KeyError, "No episode with id %s" % item
@@ -139,7 +149,7 @@ class Episode(yaml.YAMLObject):
          
          checklog = lambda: hella.status()['log_entries'][-1].get('INFO')
          while checklog().startswith('Downloading'):
-            time.sleep(0.75)
+            time.sleep(0.5)
          log = checklog()
          
          if log.startswith('Found new') and str(self.newzbinid) in log:
@@ -147,10 +157,8 @@ class Episode(yaml.YAMLObject):
             self.wanted = False
          else:
             print "Enqueue of %s failed" % self
-         
-         self._save()
    
-   def wasfake(self, sure=True):
+   def was_fake(self, sure=True):
       if sure:
          print "%s was fake. Requeueing." % self
          self.newzbinid = None
@@ -216,18 +224,23 @@ def search_newzbin(sepis, rdict):
                 'u_post_smaller_than': rules['max-megs'],
                 'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
                 'sort': 'ps_edit_date',
-                'order': 'asc',
+                'order': 'desc',
                 'u_post_results_amt': 500,
                 'feed': 'csv' })
       
       search = urlopen("https://v3.newzbin.com/search/?%s" % query)
+      
+      if options.url:
+         print search.geturl()
+      
       results = dict((int(tr.findall(r[4])[0]), int(r[1]))
                  for r in csv.reader(search))
       search.close()
       
       for episode in sepis:
          if episode.newzbinid and episode.tvrageid not in results:
-            episode.wasfake()
+            if (episode.airs - dt.now()).days > -10:
+               episode.was_fake()
          
          if episode.tvrageid in results:
             episode.newzbinid = results[episode.tvrageid]
@@ -265,29 +278,23 @@ def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
-def newreports(*args):
-   print 'Looking for new shows on newzbin.'
-   for ruleset in config['sets']:
-      inset = [e for e in showset.episodes() if e.show in ruleset['shows']]
-      search_newzbin(inset, ruleset['rules'])
-      showset.enqueue()
-   scheduler.enter(60*8, 1, newreports, args)
+def main():
+   if os.path.exists(dbpath):
+      showset = load()
+   else:
+      showset = Collection(config['sets'])
 
-if os.path.exists(dbpath):
-   showset = load()
-else:
-   showset = Collection(config['sets'])
+   if options.unwant:
+      print "No longer want '%s'" % showset[options.unwant]
 
-if options.run:
-   scheduler = sched.scheduler(time.time, time.sleep)
+   elif options.status:
+      showset.print_status()
    
-   showset.refresh(config['sets'])
-   newreports()
-   
-   scheduler.run()
+   else:
+      showset.refresh(config['sets'])
+      showset.look_on_newzbin()
 
-elif options.unwant:
-   print showset[options.unwant]
+      scheduler.run()
 
-elif options.status:
-   showset.report()
+if __name__ == '__main__':
+   main()
