@@ -67,7 +67,7 @@ class Collection(yaml.YAMLObject):
          if ep.wanted:
             print "  %s\n   %s\n" % (ep, relative_datetime(ep.airs))
    
-   def look_on_newzbin(self, *args):
+   def look_on_newzbin(self, iffy=False):
       print 'Looking for new shows on newzbin.'
       for ruleset in config['sets']:
          inset = [e for e in self._episodes() if e.show in ruleset['shows']]
@@ -75,13 +75,13 @@ class Collection(yaml.YAMLObject):
       
       for ep in self._episodes():
          if ep.wanted and ep.newzbinid:
-            if ep.airs and (ep.airs - dt.now()) > timedelta(hours=4):
+            if ep.airs and (ep.airs-dt.now()) > timedelta(hours=4) and not iffy:
                ep.was_fake(sure=False)
             else:
-               ep.enqueue()
-      
+               ep.enqueue(allowiffy=iffy)
+               
       self._save()
-      scheduler.enter(60*8, 1, self.look_on_newzbin, args)
+      scheduler.enter(60*8, 1, self.look_on_newzbin, (False,))
    
    def _save(self):
       with open(dbpath, 'w') as savefile:
@@ -150,13 +150,13 @@ class Episode(yaml.YAMLObject):
          checklog = lambda: hella.status()['log_entries'][-1].get('INFO')
          while checklog().startswith('Downloading'):
             time.sleep(0.5)
-         log = checklog()
-         
-         if log.startswith('Found new') and str(self.newzbinid) in log:
-            print "Enqueued %s" % self
-            self.wanted = False
          else:
-            print "Enqueue of %s failed" % self
+            print "Failed to enqueue %s" % self
+            return
+         log = checklog()
+
+         print "Enqueued %s" % self
+         self.wanted = False
    
    def was_fake(self, sure=True):
       if sure:
@@ -164,9 +164,9 @@ class Episode(yaml.YAMLObject):
          self.newzbinid = None
          self.wanted = True
       elif self.wanted != 'later':
-         print "%s is too early. Will confirm in an hour." % self
+         print "%s is too early. Will confirm in a couple hours." % self
          self.wanted = 'later'
-         scheduler.enter(60*60*1.5, 1, self.enqueue, (True,))
+         scheduler.enter(60*60*2, 1, self.enqueue, (True,))
    
    def __repr__(self):
       return "<Episode %s - %s - %s>" \
@@ -220,6 +220,7 @@ def search_newzbin(sepis, rdict):
                 'group': rules['group'],
                 'category': 8,
                 'u_completions': 9,
+                'u_post_states': 3,
                 'u_post_larger_than': rules['min-megs'],
                 'u_post_smaller_than': rules['max-megs'],
                 'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
@@ -291,9 +292,8 @@ def main():
       showset.print_status()
    
    else:
+      showset.look_on_newzbin(True)
       showset.refresh(config['sets'])
-      showset.look_on_newzbin()
-
       scheduler.run()
 
 if __name__ == '__main__':
