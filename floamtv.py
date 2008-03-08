@@ -24,9 +24,11 @@ parser.add_option('-u', '--update', action='store_true', dest='updatedb',
                   help='update show information from TVRage.')
 parser.add_option('--unwant', dest='unwant',
                   help='Set an episode to not download when available.')
+parser.add_option('--rewant', dest='rewant',
+                  help='Set previously unwanted episode to download when ' \
+                  'available.')
 parser.add_option('-s', '--status', dest='status', action='store_true',
                   help='Print information and status stuff.')
-parser.add_option('--url', dest='url', action='store_true')
 options, args = parser.parse_args()
 
 
@@ -36,7 +38,7 @@ if os.path.exists(configpath):
 else:
    print 'You need to set up a config file first. See the docs.'
    sys.exit()
-   
+
 
 class Collection(yaml.YAMLObject):
    yaml_tag = '!Collection'
@@ -83,6 +85,24 @@ class Collection(yaml.YAMLObject):
       self._save()
       scheduler.enter(60*8, 1, self.look_on_newzbin, (False,))
    
+   def unwant(self, item):
+      try:
+         if self[item].wanted:
+            self[item].wanted = False
+            self._save()
+            print "Will not download %s when available." % self[item]
+      except KeyError:
+         print "%s is not a valid id." % item
+   
+   def rewant(self, item):
+      try:
+         if not self[item].wanted:
+            self[item].wanted = True
+            self._save()
+            print "Will download %s when available." % self[item]
+      except KeyError:
+         print "%s is not a valid id." % item
+         
    def _save(self):
       with open(dbpath, 'w') as savefile:
          yaml.dump (self, savefile, indent=4, default_flow_style=False)
@@ -143,24 +163,21 @@ class Episode(yaml.YAMLObject):
    
    def enqueue(self, allowiffy=False):
       if self.newzbinid and self.wanted != 'later' or allowiffy:
-         hella = ServerProxy("http://hellanzb:%s@%s:8760"
-                         % (config['hellanzb-pass'], config['hellanzb-host']))
-         hella.enqueuenewzbin(self.newzbinid)
-         
-         checklog = lambda: hella.status()['log_entries'][-1].get('INFO')
-         while checklog().startswith('Downloading'):
-            time.sleep(0.5)
-         else:
-            print "Failed to enqueue %s" % self
-            return
-         log = checklog()
-
+         try:
+            hella = ServerProxy("http://hellanzb:%s@%s:8760"
+                           % (config['hellanzb-pass'], config['hellanzb-host']))
+            hella.enqueuenewzbin(self.newzbinid)
+         except:
+            print "Unable to enqueue %s" % self
+            return False
+                     
          print "Enqueued %s" % self
          self.wanted = False
    
    def was_fake(self, sure=True):
       if sure:
-         print "%s was fake. Requeueing." % self
+         if self.wanted != 'later':
+            print "%s was fake. Requeueing." % self
          self.newzbinid = None
          self.wanted = True
       elif self.wanted != 'later':
@@ -231,9 +248,6 @@ def search_newzbin(sepis, rdict):
       
       search = urlopen("https://v3.newzbin.com/search/?%s" % query)
       
-      if options.url:
-         print search.geturl()
-      
       results = dict((int(tr.findall(r[4])[0]), int(r[1]))
                  for r in csv.reader(search))
       search.close()
@@ -286,7 +300,12 @@ def main():
       showset = Collection(config['sets'])
 
    if options.unwant:
-      print "No longer want '%s'" % showset[options.unwant]
+      for show in options.unwant.split(' '):
+         showset.unwant(show)
+         
+   elif options.rewant:
+      for show in options.rewant.split(' '):
+         showset.rewant(show)
 
    elif options.status:
       showset.print_status()
