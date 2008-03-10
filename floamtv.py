@@ -4,7 +4,7 @@
 # distributed under the GPLv3. See LICENSE
 
 from __future__ import with_statement
-import sys, re, os.path, csv, yaml, time, sched, signal
+import re, os.path, csv, yaml, time, sched
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
@@ -14,31 +14,15 @@ from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
 configpath = os.path.expanduser('~/.floamtvconfig2')
+
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
 scheduler = sched.scheduler(time.time, time.sleep)
 
-parser = OptionParser()
-parser.add_option('-r', '--run', action='store_true', dest='run',
-                  help='search newzbin and enqueue episodes that are ready.')
-parser.add_option('-u', '--update', action='store_true', dest='updatedb',
-                  help='update show information from TVRage.')
-parser.add_option('--unwant', dest='unwant',
-                  help='Set an episode to not download when available.')
-parser.add_option('--rewant', dest='rewant',
-                  help='Set previously unwanted episode to download when ' \
-                  'available.')
-parser.add_option('-s', '--status', dest='status', action='store_true',
-                  help='Print information and status stuff.')
-options, args = parser.parse_args()
-
-
-if os.path.exists(configpath):
+try:
    with open(configpath, 'r') as configuration:
       config = yaml.load(configuration)
-else:
+except IOError:
    print 'You need to set up a config file first. See the docs.'
-   sys.exit()
-
 
 class Collection(yaml.YAMLObject):
    yaml_tag = '!Collection'
@@ -62,12 +46,22 @@ class Collection(yaml.YAMLObject):
       self._save()
       scheduler.enter(60*60*2, 1, self.refresh, (sets,))
    
-   def print_status(self, type='all'):
+   def print_status(self):
+      def format(e): return "  %s\n    (%s)\n" % (e, relative_datetime(e.airs))
+      def show(e): return e.show
+      
       print "\n Episodes we want\n"\
             " ================\n"
-      for ep in self._episodes():
+      for ep in sorted(self._episodes(), key=show):
          if ep.wanted:
-            print "  %s\n   %s\n" % (ep, relative_datetime(ep.airs))
+            print format(ep)
+      
+      if options.verbose:
+         print "\n Unwanted Episodes\n"\
+               " ===================\n"
+         for ep in sorted(self._episodes(), key=show):
+            if not ep.wanted:
+               print format(ep)
    
    def look_on_newzbin(self, iffy=False):
       print 'Looking for new shows on newzbin.'
@@ -298,22 +292,42 @@ def main():
       showset = load()
    else:
       showset = Collection(config['sets'])
+      print "This was the first run, exiting. You'll probably want to --unwant"\
+            " any episodes you don't want to be fetched next time."
+      return
 
    if options.unwant:
       for show in options.unwant.split(' '):
          showset.unwant(show)
-         
+      
    elif options.rewant:
       for show in options.rewant.split(' '):
          showset.rewant(show)
 
    elif options.status:
       showset.print_status()
-   
+
    else:
-      showset.look_on_newzbin(True)
       showset.refresh(config['sets'])
+      showset.look_on_newzbin(True)
       scheduler.run()
+      
 
 if __name__ == '__main__':
+   parser = OptionParser()
+   parser.add_option('-r', '--run', action='store_true', dest='run',
+                     help='search newzbin and enqueue episodes that are ready.')
+   parser.add_option('-u', '--update', action='store_true', dest='updatedb',
+                     help='update show information from TVRage.')
+   parser.add_option('--unwant', dest='unwant',
+                     help='Set an episode to not download when available.')
+   parser.add_option('--rewant', dest='rewant',
+                     help='Set previously unwanted episode to download when ' \
+                     'available.')
+   parser.add_option('-s', '--status', dest='status', action='store_true',
+                     help='Print information and status stuff.')
+   parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
+                     help='Print more information than normal.')
+   options, args = parser.parse_args()
+   
    main()
