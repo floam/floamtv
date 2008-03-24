@@ -4,7 +4,7 @@
 # distributed under the GPLv3. See LICENSE
 
 from __future__ import with_statement
-import re, os.path, csv, yaml, time, sched
+import re, os, csv, yaml, time, sched, sys, signal, errno, atexit
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
@@ -14,6 +14,7 @@ from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
 configpath = os.path.expanduser('~/.floamtvconfig2')
+pidfile = os.path.expanduser('~/.floamtvpid')
 
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
 scheduler = sched.scheduler(time.time, time.sleep)
@@ -40,10 +41,10 @@ class Collection(yaml.YAMLObject):
       for aset in sets:
          shows.update(set(aset['shows']))
       
-      alreadyhave = [t.title for t in self.shows]
-      self.shows += [Show(s) for s in shows if s not in alreadyhave]
+      alreadyin = [t.title for t in self.shows]
+      self.shows += [Show(s) for s in shows if s not in alreadyin]
       
-      self._save()
+      self.save()
       scheduler.enter(60*60*2, 1, self.refresh, (sets,))
    
    def print_status(self):
@@ -71,19 +72,21 @@ class Collection(yaml.YAMLObject):
       
       for ep in self._episodes():
          if ep.wanted and ep.newzbinid:
-            if ep.airs and (ep.airs-dt.now()) > timedelta(hours=4) and not iffy:
+            if ep.airs and (ep.airs-dt.now()) > timedelta(hours=3) and not iffy:
                ep.was_fake(sure=False)
             else:
                ep.enqueue(allowiffy=iffy)
+               if ep.wanted:
+                  print "What fuck what"
                
-      self._save()
+      self.save()
       scheduler.enter(60*8, 1, self.look_on_newzbin, (False,))
    
    def unwant(self, item):
       try:
          if self[item].wanted:
             self[item].wanted = False
-            self._save()
+            self.save()
             print "Will not download %s when available." % self[item]
       except KeyError:
          print "%s is not a valid id." % item
@@ -92,12 +95,12 @@ class Collection(yaml.YAMLObject):
       try:
          if not self[item].wanted:
             self[item].wanted = True
-            self._save()
+            self.save()
             print "Will download %s when available." % self[item]
       except KeyError:
          print "%s is not a valid id." % item
          
-   def _save(self):
+   def save(self):
       with open(dbpath, 'w') as savefile:
          yaml.dump (self, savefile, indent=4, default_flow_style=False)
    
@@ -105,7 +108,7 @@ class Collection(yaml.YAMLObject):
       for show in self.shows:
          for episode in show.episodes:
             yield episode
-   
+
    def __getitem__(self, item):
       for episode in self._episodes():
          if humanize(episode.tvrageid) == item:
@@ -131,16 +134,17 @@ class Show(yaml.YAMLObject):
    def update(self, rageinfo=None):
       if not rageinfo:
          rageinfo = tvrage_info(self.title)
-      recent = filter(bool, [rageinfo['latest'], rageinfo['next']])
+      rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
-      for ep in recent:
+      for ep in rcnt:
          self.add(ep)
       
-      self.episodes = [e for e in self.episodes if e.number in recent]
+      self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted]
    
    def __repr__(self):
       return "<Show %s with episodes %s>" \
          % (self.title, ' and '.join(map(str, self.episodes)))
+   
 
 
 class Episode(yaml.YAMLObject):
@@ -158,6 +162,7 @@ class Episode(yaml.YAMLObject):
    def enqueue(self, allowiffy=False):
       if self.newzbinid and self.wanted != 'later' or allowiffy:
          try:
+            print "Telling to enqueue..."
             hella = ServerProxy("http://hellanzb:%s@%s:8760"
                            % (config['hellanzb-pass'], config['hellanzb-host']))
             hella.enqueuenewzbin(self.newzbinid)
@@ -210,7 +215,7 @@ def tvrage_info(show_name, episode=''):
    
    if rage['Episode URL']:
       clean.update({
-         'tvrageid': int(tr.findall(rage['Episode URL']).pop()),
+         'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
          'number': rage['Episode Info'][0],
          'title': rage['Episode Info'][1],
          'airs': "%s; %s" % (rage['Episode Info'][2], rage['Airtime'])
@@ -225,34 +230,35 @@ def tvrage_info(show_name, episode=''):
    return clean
 
 def search_newzbin(sepis, rdict):
-      rules = defaultdict(lambda: '')
-      rules.update(rdict)
-      query = urlencode({ 'searchaction': 'Search',
-                'group': rules['group'],
-                'category': 8,
-                'u_completions': 9,
-                'u_post_states': 3,
-                'u_post_larger_than': rules['min-megs'],
-                'u_post_smaller_than': rules['max-megs'],
-                'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
-                'sort': 'ps_edit_date',
-                'order': 'desc',
-                'u_post_results_amt': 500,
-                'feed': 'csv' })
+   '''Search newzbin for a list of episodes sepis and rules rdict. Episodes are
+      updated with newzbinids.'''
+   rules = defaultdict(lambda: '')
+   rules.update(rdict)
+   query = urlencode({ 'searchaction': 'Search',
+             'group': rules['group'],
+             'category': 8,
+             'u_completions': 9,
+             'u_post_states': 2,
+             'u_post_larger_than': rules['min-megs'],
+             'u_post_smaller_than': rules['max-megs'],
+             'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
+             'sort': 'ps_edit_date',
+             'order': 'desc',
+             'u_post_results_amt': 999,
+             'feed': 'csv' })
+   
+   search = urlopen("https://v3.newzbin.com/search/?%s" % query)
+   results = dict((int(tr.findall(r[4])[0]), int(r[1]))
+              for r in csv.reader(search))
+   search.close()
+   
+   for ep in sepis:
+      if ep.airs and ep.newzbinid and ep.tvrageid not in results:
+         if (ep.airs - dt.now()).days > -7:
+            ep.was_fake()
       
-      search = urlopen("https://v3.newzbin.com/search/?%s" % query)
-      
-      results = dict((int(tr.findall(r[4])[0]), int(r[1]))
-                 for r in csv.reader(search))
-      search.close()
-      
-      for episode in sepis:
-         if episode.newzbinid and episode.tvrageid not in results:
-            if (episode.airs - dt.now()).days > -10:
-               episode.was_fake()
-         
-         if episode.tvrageid in results:
-            episode.newzbinid = results[episode.tvrageid]
+      if ep.tvrageid in results:
+         ep.newzbinid = results[ep.tvrageid]
 
 def humanize(q):
    'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
@@ -287,6 +293,16 @@ def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
+def getpid():
+   with open(pidfile) as f:
+      pid = f.read()
+   return int(pid)
+
+def cleanup(showset):
+   print "Cleaning shit up."
+   os.unlink(pidfile)
+   showset.save()
+
 def main():
    if os.path.exists(dbpath):
       showset = load()
@@ -308,6 +324,22 @@ def main():
       showset.print_status()
 
    else:
+      if os.path.exists(pidfile):
+         p = getpid()
+         try:
+            os.kill(p, 0)
+         except os.error, err:
+            if err.errno == errno.ESRCH:
+               print "stale pidfile exists. removing"
+               os.unlink(pidfile)
+         else:
+            raise SystemExit, "floamtv is already running."
+      
+      with open(pidfile, "w") as f:
+         f.write("%d" % os.getpid())
+      
+      atexit.register(cleanup, (showset))
+
       showset.refresh(config['sets'])
       showset.look_on_newzbin(True)
       scheduler.run()
@@ -315,8 +347,6 @@ def main():
 
 if __name__ == '__main__':
    parser = OptionParser()
-   parser.add_option('-r', '--run', action='store_true', dest='run',
-                     help='search newzbin and enqueue episodes that are ready.')
    parser.add_option('-u', '--update', action='store_true', dest='updatedb',
                      help='update show information from TVRage.')
    parser.add_option('--unwant', dest='unwant',
