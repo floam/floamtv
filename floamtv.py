@@ -4,11 +4,12 @@
 # distributed under the GPLv3. See LICENSE
 
 from __future__ import with_statement
-import re, os, csv, yaml, time, sched, sys, signal, errno, atexit
+import re, os, csv, yaml, time, sched, sys, signal, errno, atexit, threading
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
 from xmlrpclib import ServerProxy
+from SimpleXMLRPCServer import SimpleXMLRPCServer
 from datetime import datetime as dt, timedelta
 from collections import defaultdict
 
@@ -25,12 +26,57 @@ try:
 except IOError:
    print 'You need to set up a config file first. See the docs.'
 
+
+def checkpid():
+   if os.path.exists(pidfile):
+      with open(pidfile) as f:
+         pid = f.read()
+      
+      try:
+         os.kill(int(pid), 0)
+      except os.error, err:
+         if err.errno == errno.ESRCH:
+            os.unlink(pidfile)
+      else:
+         return int(pid)
+
+if checkpid():
+   raise SystemExit, 'floamtv is already running.'
+
+with open(pidfile, "w") as f:
+   f.write("%d" % os.getpid())
+
+def rpc_or_here(func):
+   def rpc_it(*a, **kw):
+      return "Over the wire man!"
+      #rpc = xmlrpc.ServerProxy('http://localhost:9061')
+   
+   def schedule_it(*a, **kw):
+      scheduler.enter(0, 0, func, (a))
+      return "Scheduled.."
+   
+   runningpid = checkpid()
+   
+   if runningpid is None:
+      return func
+   elif runningpid == os.getpid():
+      return schedule_it
+   else:
+      return rpc_it
+
 class Collection(yaml.YAMLObject):
    yaml_tag = '!Collection'
    
    def __init__(self, sets):
       self.shows = []
       self.refresh(sets)
+      
+   def serveviaxmlrpc(self):
+      server = SimpleXMLRPCServer(('localhost', 9061))
+      server.register_introspection_functions()
+      server.register_function(self.unwant, 'unwant')
+      server.register_function(self.rewant, 'rewant')
+      server.serve_forever()
    
    def refresh(self, sets):
       print 'Getting new data from TVRage.'
@@ -82,23 +128,29 @@ class Collection(yaml.YAMLObject):
       self.save()
       scheduler.enter(60*8, 1, self.look_on_newzbin, (False,))
    
+   @rpc_or_here
    def unwant(self, item):
       try:
          if self[item].wanted:
             self[item].wanted = False
             self.save()
             print "Will not download %s when available." % self[item]
+         else:
+            print "Error: %s is already unwanted" % self[item]
       except KeyError:
-         print "%s is not a valid id." % item
+         print "Error: %s is not a valid id." % item
    
+   @rpc_or_here
    def rewant(self, item):
       try:
          if not self[item].wanted:
             self[item].wanted = True
             self.save()
             print "Will download %s when available." % self[item]
+         else:
+            print "Error: %s is already wanted" % self[item]
       except KeyError:
-         print "%s is not a valid id." % item
+         print "Error: %s is not a valid id." % item
          
    def save(self):
       with open(dbpath, 'w') as savefile:
@@ -293,11 +345,6 @@ def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
-def getpid():
-   with open(pidfile) as f:
-      pid = f.read()
-   return int(pid)
-
 def cleanup(showset):
    print "Cleaning shit up."
    os.unlink(pidfile)
@@ -314,34 +361,24 @@ def main():
 
    if options.unwant:
       for show in options.unwant.split(' '):
-         showset.unwant(show)
+         print showset.unwant(show)
       
    elif options.rewant:
       for show in options.rewant.split(' '):
-         showset.rewant(show)
+         print showset.rewant(show)
 
    elif options.status:
       showset.print_status()
 
    else:
-      if os.path.exists(pidfile):
-         p = getpid()
-         try:
-            os.kill(p, 0)
-         except os.error, err:
-            if err.errno == errno.ESRCH:
-               print "stale pidfile exists. removing"
-               os.unlink(pidfile)
-         else:
-            raise SystemExit, "floamtv is already running."
-      
-      with open(pidfile, "w") as f:
-         f.write("%d" % os.getpid())
-      
       atexit.register(cleanup, (showset))
 
-      showset.refresh(config['sets'])
-      showset.look_on_newzbin(True)
+      rpc = threading.Thread(target=showset.serveviaxmlrpc)
+      rpc.setDaemon(True)
+      rpc.start()
+      
+      scheduler.enter(0, 1, showset.refresh, (config['sets'],))
+      scheduler.enter(0, 1, showset.look_on_newzbin, (True,))
       scheduler.run()
       
 
