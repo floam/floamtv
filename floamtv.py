@@ -4,12 +4,13 @@
 # distributed under the GPLv3. See LICENSE
 
 from __future__ import with_statement
-import re, os, csv, yaml, time, sched, sys, signal, errno, atexit, threading
+import re, os, csv, yaml, time, sys, errno, atexit, threading
+from twisted.internet import reactor, task, defer
+from twisted.web.client import getPage
 from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
 from xmlrpclib import ServerProxy
-from SimpleXMLRPCServer import SimpleXMLRPCServer
 from datetime import datetime as dt, timedelta
 from collections import defaultdict
 
@@ -18,7 +19,6 @@ configpath = os.path.expanduser('~/.floamtvconfig2')
 pidfile = os.path.expanduser('~/.floamtvpid')
 
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
-scheduler = sched.scheduler(time.time, time.sleep)
 
 try:
    with open(configpath, 'r') as configuration:
@@ -46,24 +46,6 @@ if checkpid():
 with open(pidfile, "w") as f:
    f.write("%d" % os.getpid())
 
-def rpc_or_here(func):
-   def rpc_it(*a, **kw):
-      return "Over the wire man!"
-      #rpc = xmlrpc.ServerProxy('http://localhost:9061')
-   
-   def schedule_it(*a, **kw):
-      scheduler.enter(0, 0, func, (a))
-      return "Scheduled.."
-   
-   runningpid = checkpid()
-   
-   if runningpid is None:
-      return func
-   elif runningpid == os.getpid():
-      return schedule_it
-   else:
-      return rpc_it
-
 class Collection(yaml.YAMLObject):
    yaml_tag = '!Collection'
    
@@ -71,27 +53,19 @@ class Collection(yaml.YAMLObject):
       self.shows = []
       self.refresh(sets)
       
-   def serveviaxmlrpc(self):
-      server = SimpleXMLRPCServer(('localhost', 9061))
-      server.register_introspection_functions()
-      server.register_function(self.unwant, 'unwant')
-      server.register_function(self.rewant, 'rewant')
-      server.serve_forever()
-   
    def refresh(self, sets):
       print 'Getting new data from TVRage.'
       for show in self.shows:
-         show.update()
+         show.update(tvrage_info(show.title))
       
       shows = set()
       for aset in sets:
          shows.update(set(aset['shows']))
       
       alreadyin = [t.title for t in self.shows]
-      self.shows += [Show(s) for s in shows if s not in alreadyin]
+      self.shows += [Show(s, tvrage_info(s)) for s in shows if s not in alreadyin]
       
       self.save()
-      scheduler.enter(60*60*2, 1, self.refresh, (sets,))
    
    def print_status(self):
       def format(e): return "  %s\n    (%s)\n" % (e, relative_datetime(e.airs))
@@ -111,24 +85,25 @@ class Collection(yaml.YAMLObject):
                print format(ep)
    
    def look_on_newzbin(self, iffy=False):
+      def enqueue_new_stuff(results):
+         for ep in self._episodes():
+            if ep.wanted and ep.newzbinid:
+               if ep.airs and (ep.airs-dt.now()) > timedelta(hours=3) and not iffy:
+                  ep.was_fake(sure=False)
+               else:
+                  ep.enqueue(allowiffy=iffy)
+         self.save()
+         
       print 'Looking for new shows on newzbin.'
+      
+      dfrds = []
       for ruleset in config['sets']:
          inset = [e for e in self._episodes() if e.show in ruleset['shows']]
-         search_newzbin(inset, ruleset['rules'])
+         dfrds.append(search_newzbin(inset, ruleset['rules']))
       
-      for ep in self._episodes():
-         if ep.wanted and ep.newzbinid:
-            if ep.airs and (ep.airs-dt.now()) > timedelta(hours=3) and not iffy:
-               ep.was_fake(sure=False)
-            else:
-               ep.enqueue(allowiffy=iffy)
-               if ep.wanted:
-                  print "What fuck what"
-               
-      self.save()
-      scheduler.enter(60*8, 1, self.look_on_newzbin, (False,))
+      searches = defer.DeferredList(dfrds)
+      searches.addCallback(enqueue_new_stuff)
    
-   @rpc_or_here
    def unwant(self, item):
       try:
          if self[item].wanted:
@@ -140,7 +115,6 @@ class Collection(yaml.YAMLObject):
       except KeyError:
          print "Error: %s is not a valid id." % item
    
-   @rpc_or_here
    def rewant(self, item):
       try:
          if not self[item].wanted:
@@ -170,22 +144,19 @@ class Collection(yaml.YAMLObject):
 
 class Show(yaml.YAMLObject):
    yaml_tag = '!Show'
-   def __init__(self, show):
-      info = tvrage_info(show)
+   def __init__(self, show, info):
       self.title = show
       self.episodes = []
       self.update(info)
    
    def add(self, episode):
       if episode and episode not in (e.number for e in self.episodes):
-         ep = Episode(self.title, episode)
+         ep = Episode(self.title, tvrage_info(self.title, episode))
          if ep.tvrageid:
             self.episodes.append(ep)
             print "New episode %s" % ep
    
-   def update(self, rageinfo=None):
-      if not rageinfo:
-         rageinfo = tvrage_info(self.title)
+   def update(self, rageinfo):
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
       for ep in rcnt:
@@ -201,8 +172,7 @@ class Show(yaml.YAMLObject):
 
 class Episode(yaml.YAMLObject):
    yaml_tag = '!Episode'
-   def __init__(self, show, number):
-      info = tvrage_info(show, number)
+   def __init__(self, show, info):
       self.show = show
       self.number = info['number']
       self.title = info['title']
@@ -234,7 +204,7 @@ class Episode(yaml.YAMLObject):
       elif self.wanted != 'later':
          print "%s is too early. Will confirm in a couple hours." % self
          self.wanted = 'later'
-         scheduler.enter(60*60*2, 1, self.enqueue, (True,))
+         reactor.callLater(60*60*2, self.enqueue, True)
    
    def __repr__(self):
       return "<Episode %s - %s - %s>" \
@@ -246,16 +216,19 @@ class Episode(yaml.YAMLObject):
    
 
 def tvrage_info(show_name, episode=''):
-   rage = clean = defaultdict(lambda: None)
-   
    u = urlencode({'show': show_name, 'ep': episode})
    showinfo = urlopen("http://tvrage.com/quickinfo.php?%s" % u)
-   result = showinfo.read()
-   
-   if result.startswith('No Show Results'):
+   result = parse_tvrage(showinfo.read())
+   showinfo.close()
+   return result
+
+
+def parse_tvrage(text):
+   rage = clean = defaultdict(lambda: None)
+   if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
-   for line in result.splitlines():
+   for line in text.splitlines():
       part = line.split('@')
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
@@ -278,12 +251,20 @@ def tvrage_info(show_name, episode=''):
    except (ValueError, TypeError):
       clean['airs'] = None
    
-   showinfo.close()
    return clean
 
 def search_newzbin(sepis, rdict):
-   '''Search newzbin for a list of episodes sepis and rules rdict. Episodes are
-      updated with newzbinids.'''
+   def process_newzbin_results(contents, sepis):
+      results = dict((int(tr.findall(r[4])[0]), int(r[1]))
+                 for r in csv.reader(contents))
+      for ep in sepis:
+         if ep.airs and ep.newzbinid and ep.tvrageid not in results:
+            if (ep.airs - dt.now()).days > -7:
+               ep.was_fake()
+
+         if ep.tvrageid in results:
+            ep.newzbinid = results[ep.tvrageid]
+      
    rules = defaultdict(lambda: '')
    rules.update(rdict)
    query = urlencode({ 'searchaction': 'Search',
@@ -299,18 +280,9 @@ def search_newzbin(sepis, rdict):
              'u_post_results_amt': 999,
              'feed': 'csv' })
    
-   search = urlopen("https://v3.newzbin.com/search/?%s" % query)
-   results = dict((int(tr.findall(r[4])[0]), int(r[1]))
-              for r in csv.reader(search))
-   search.close()
-   
-   for ep in sepis:
-      if ep.airs and ep.newzbinid and ep.tvrageid not in results:
-         if (ep.airs - dt.now()).days > -7:
-            ep.was_fake()
-      
-      if ep.tvrageid in results:
-         ep.newzbinid = results[ep.tvrageid]
+   search = getPage("https://v3.newzbin.com/search/?%s" % query)
+   search.addCallback(process_newzbin_results, (sepis,))
+   return search
 
 def humanize(q):
    'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
@@ -372,16 +344,12 @@ def main():
 
    else:
       atexit.register(cleanup, (showset))
-
-      rpc = threading.Thread(target=showset.serveviaxmlrpc)
-      rpc.setDaemon(True)
-      rpc.start()
       
-      scheduler.enter(0, 1, showset.refresh, (config['sets'],))
-      scheduler.enter(0, 1, showset.look_on_newzbin, (True,))
-      scheduler.run()
+      task.LoopingCall(showset.refresh, config['sets']).start(60*5)
+      task.LoopingCall(showset.look_on_newzbin, True).start(60*60*3)
       
-
+      reactor.run()
+      
 if __name__ == '__main__':
    parser = OptionParser()
    parser.add_option('-u', '--update', action='store_true', dest='updatedb',
