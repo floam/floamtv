@@ -4,10 +4,11 @@
 # distributed under the GPLv3. See LICENSE
 
 from __future__ import with_statement
-import re, os, csv, yaml, time, sys, errno, atexit, threading
+import re, os, csv, yaml, time, sys, errno, atexit
+from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
+from twisted.web import xmlrpc, server
 from twisted.web.client import getPage
-from urllib2 import urlopen
 from urllib import urlencode
 from optparse import OptionParser
 from xmlrpclib import ServerProxy
@@ -25,67 +26,112 @@ try:
       config = yaml.load(configuration)
 except IOError:
    print 'You need to set up a config file first. See the docs.'
+   sys.exit()
 
+tasks = {}
 
-def checkpid():
-   if os.path.exists(pidfile):
-      with open(pidfile) as f:
-         pid = f.read()
-      
-      try:
-         os.kill(int(pid), 0)
-      except os.error, err:
-         if err.errno == errno.ESRCH:
-            os.unlink(pidfile)
-      else:
-         return int(pid)
-
-if checkpid():
-   raise SystemExit, 'floamtv is already running.'
-
-with open(pidfile, "w") as f:
-   f.write("%d" % os.getpid())
-
-class Collection(yaml.YAMLObject):
+class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
+   """
+   The Collection object holds all our Shows. It also provides functions to
+   do things to our collection of Shows.
+   
+   An individual episode can be chosen through Collection[id], where id is a
+   humanize()'d version of the TVRage ID.
+   """
+   
    yaml_tag = '!Collection'
-   
-   def __init__(self, sets):
+   allowNone = False
+   def __init__(self, sets=None):
       self.shows = []
-      self.refresh(sets)
-      
-   def refresh(self, sets):
-      print 'Getting new data from TVRage.'
-      for show in self.shows:
-         show.update(tvrage_info(show.title))
-      
-      shows = set()
-      for aset in sets:
-         shows.update(set(aset['shows']))
-      
-      alreadyin = [t.title for t in self.shows]
-      self.shows += [Show(s, tvrage_info(s)) for s in shows if s not in alreadyin]
-      
-      self.save()
+      if sets:
+         self.refresh(sets)
    
-   def print_status(self):
-      def format(e): return "  %s\n    (%s)\n" % (e, relative_datetime(e.airs))
-      def show(e): return e.show
+   def refresh(self, sets):
+      """
+      Populate this Collection with new show information from TVRage. Existing
+      Shows have new episodes added to them and the rest are updated with new 
+      episodes. sets looks like this:
       
-      print "\n Episodes we want\n"\
-            " ================\n"
-      for ep in sorted(self._episodes(), key=show):
-         if ep.wanted:
-            print format(ep)
+      [
+         { 'rules': { ... }, 'shows': ['Show Name 1', 'Show Name 2'] },
+         { 'rules': { ... }, 'shows': [ ... ] }
+      ]
       
-      if options.verbose:
-         print "\n Unwanted Episodes\n"\
-               " ===================\n"
-         for ep in sorted(self._episodes(), key=show):
-            if not ep.wanted:
-               print format(ep)
+      Rules don't affect this step at all.
+      """
+      
+      print 'Getting new data from TVRage.'
+      def _check_for_brand_new_shows(_):
+         def _start(x):
+            if not tasks['newzbin'].running:
+               tasks['newzbin'].start(60*config['newzbin-interval'])
+         
+         shows = set()
+         for aset in sets:
+            shows.update(set(aset['shows']))
+         
+         alreadyin = [t.title for t in self.shows]
+         newshows = []
+         
+         def new_show(info):
+            new_show = Show(info['wecallit'])
+            dfrd = new_show.update(info)
+            self.shows.append(new_show)
+            return dfrd
+         
+         for s in (z for z in shows if z not in alreadyin):
+            newshow = tvrage_info(s, None)
+            newshow.addCallback(new_show)
+            newshows.append(newshow)
+            
+         ns = defer.DeferredList(newshows)
+         ns.addCallback(_start)
+         ns.addCallback(lambda _: self.save())
+         
+         return ns
+            
+      if tasks.has_key('newzbin') and tasks['newzbin'].running:
+         tasks['newzbin'].stop()
+      
+      pageinfos = []
+      for show in self.shows:
+         ashow = tvrage_info(show.title, None)
+         ashow.addCallback(show.update)
+         pageinfos.append(ashow)
+         
+      pageinfos = defer.DeferredList(pageinfos)
+      pageinfos.addCallback(_check_for_brand_new_shows)
+      
+      return pageinfos
+   
+   def status(self, verbose):
+      """
+      Returns a pretty listing of shows we know about. If verbose is True,
+      all shows we know about are included, else only wanted shows.
+      """
+      
+      out = "\n Episodes\n"\
+             " ========\n"
+      for ep in sorted(self._episodes(), key=lambda e: e.show):
+         if ep.wanted or verbose:
+            w = '+' if e.wanted else '-'
+            out += "  (%s) %s\n\t(%s)\n" % (w, e, relative_datetime(e.airs))
+      
+      return out
    
    def look_on_newzbin(self, iffy=False):
-      def enqueue_new_stuff(results):
+      """
+      Goes through and does a newzbin search for all wanted episodes. If we can
+      resolve a newzbin id for a show we want, we enqueue it with hellanzb.
+      
+      We call episode.was_fake(sure=False) on episodes that are more than three
+      hours early. This puts them in a state where we will only enqueue them if
+      they are still on newzbin in two hours.
+      
+      If allowiffy is True, we enqueue episodes even if they're too early.
+      """
+      
+      def _enqueue_new_stuff(results):
          for ep in self._episodes():
             if ep.wanted and ep.newzbinid:
                if ep.airs and (ep.airs-dt.now()) > timedelta(hours=3) and not iffy:
@@ -102,31 +148,44 @@ class Collection(yaml.YAMLObject):
          dfrds.append(search_newzbin(inset, ruleset['rules']))
       
       searches = defer.DeferredList(dfrds)
-      searches.addCallback(enqueue_new_stuff)
+      searches.addCallback(_enqueue_new_stuff)
    
-   def unwant(self, item):
+   def unwant(self, floamid):
+      """
+      Given a humanize()'d ID for an episode, set the episode not to enqueue
+      when it becomes available.
+      """
       try:
-         if self[item].wanted:
-            self[item].wanted = False
+         if self[floamid].wanted:
+            self[floamid].wanted = False
+            self[floamid].newzbinid = None
             self.save()
-            print "Will not download %s when available." % self[item]
+            return "Will not download %s when available." % self[floamid]
          else:
-            print "Error: %s is already unwanted" % self[item]
+            return "Error: %s is already unwanted" % self[floamid]
       except KeyError:
-         print "Error: %s is not a valid id." % item
+         return "Error: %s is not a valid id." % floamid
    
-   def rewant(self, item):
+   def rewant(self, floamid):
+      """
+      Given a humanize()'d ID for an episode, set the episode to enqueue when it
+      becomes available.
+      """
       try:
-         if not self[item].wanted:
-            self[item].wanted = True
+         if not self[floamid].wanted:
+            self[floamid].wanted = True
+            self[floamid].newzbinid = None
             self.save()
-            print "Will download %s when available." % self[item]
+            return "Will download %s when available." % self[floamid]
          else:
-            print "Error: %s is already wanted" % self[item]
+            return "Error: %s is already wanted" % self[floamid]
       except KeyError:
-         print "Error: %s is not a valid id." % item
+         return "Error: %s is not a valid id." % floamid
          
    def save(self):
+      """
+      Write the entire Collection to disk (at global dbpath) in YAML format.
+      """
       with open(dbpath, 'w') as savefile:
          yaml.dump (self, savefile, indent=4, default_flow_style=False)
    
@@ -134,46 +193,60 @@ class Collection(yaml.YAMLObject):
       for show in self.shows:
          for episode in show.episodes:
             yield episode
-
+   
    def __getitem__(self, item):
       for episode in self._episodes():
          if humanize(episode.tvrageid) == item:
             return episode
       else:
          raise KeyError, "No episode with id %s" % item
+   
+   xmlrpc_status = status
+   xmlrpc_unwant = unwant
+   xmlrpc_rewant = rewant
 
 class Show(yaml.YAMLObject):
+   "A Show represents a television show, which has Episodes as children."
    yaml_tag = '!Show'
-   def __init__(self, show, info):
-      self.title = show
+   def __init__(self, title):
       self.episodes = []
-      self.update(info)
+      self.title = title
+   
+   def _add_episode(self, infodict):
+      "Given an infodict, create a new Episode in self.episodes"
+      ep = Episode(infodict)
+      if ep.tvrageid:
+         self.episodes.append(ep)
+         print "New episode: %s" % ep
    
    def add(self, episode):
+      """
+      Given an episode-number string in the format used by TVRage, ('3x04' being
+      season 3, episode 4), look up further information on this show and add it
+      to self.episodes.  
+      """
       if episode and episode not in (e.number for e in self.episodes):
-         ep = Episode(self.title, tvrage_info(self.title, episode))
-         if ep.tvrageid:
-            self.episodes.append(ep)
-            print "New episode %s" % ep
+         newepisode = tvrage_info(self.title, episode)
+         newepisode.addCallback(self._add_episode)
+         return newepisode
    
    def update(self, rageinfo):
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
-      for ep in rcnt:
-         self.add(ep)
-      
+      cbs = [self.add(ep) for ep in rcnt]
       self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted]
+      
+      return defer.DeferredList([dfrd for dfrd in cbs if dfrd])
    
    def __repr__(self):
       return "<Show %s with episodes %s>" \
          % (self.title, ' and '.join(map(str, self.episodes)))
    
 
-
 class Episode(yaml.YAMLObject):
    yaml_tag = '!Episode'
-   def __init__(self, show, info):
-      self.show = show
+   def __init__(self, info):
+      self.show = info['wecallit']
       self.number = info['number']
       self.title = info['title']
       self.tvrageid = info['tvrageid']
@@ -184,7 +257,6 @@ class Episode(yaml.YAMLObject):
    def enqueue(self, allowiffy=False):
       if self.newzbinid and self.wanted != 'later' or allowiffy:
          try:
-            print "Telling to enqueue..."
             hella = ServerProxy("http://hellanzb:%s@%s:8760"
                            % (config['hellanzb-pass'], config['hellanzb-host']))
             hella.enqueuenewzbin(self.newzbinid)
@@ -215,15 +287,15 @@ class Episode(yaml.YAMLObject):
                                      humanize(self.tvrageid))
    
 
-def tvrage_info(show_name, episode=''):
+
+def tvrage_info(show_name, episode):
+   episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
-   showinfo = urlopen("http://tvrage.com/quickinfo.php?%s" % u)
-   result = parse_tvrage(showinfo.read())
-   showinfo.close()
-   return result
+   info = getPage("http://tvrage.com/quickinfo.php?%s" % u)
+   info.addCallback(parse_tvrage, show_name)
+   return info
 
-
-def parse_tvrage(text):
+def parse_tvrage(text, wecallit):
    rage = clean = defaultdict(lambda: None)
    if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
@@ -233,38 +305,43 @@ def parse_tvrage(text):
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
    clean.update({
+      'wecallit': wecallit,
       'title': rage['Show Name'],
       'next': rage['Next Episode'][0] if rage['Next Episode'] else None,
-      'latest': rage['Latest Episode'][0] if rage['Latest Episode'] else None
-   })
+      'latest': rage['Latest Episode'][0] if rage['Latest Episode'] else None })
    
    if rage['Episode URL']:
-      clean.update({
-         'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
-         'number': rage['Episode Info'][0],
-         'title': rage['Episode Info'][1],
-         'airs': "%s; %s" % (rage['Episode Info'][2], rage['Airtime'])
-      })
-   
+      clean.update({ 'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
+                     'number': rage['Episode Info'][0],
+                     'title': rage['Episode Info'][1],
+                     'airs': "%s; %s" % (rage['Episode Info'][2],
+                                                              rage['Airtime'])})
    try:
       clean['airs'] = dt.strptime(clean['airs'], "%d/%b/%Y; %A, %I:%M %p")
-   except (ValueError, TypeError):
+   except:
       clean['airs'] = None
    
    return clean
 
 def search_newzbin(sepis, rdict):
-   def process_newzbin_results(contents, sepis):
-      results = dict((int(tr.findall(r[4])[0]), int(r[1]))
-                 for r in csv.reader(contents))
-      for ep in sepis:
-         if ep.airs and ep.newzbinid and ep.tvrageid not in results:
-            if (ep.airs - dt.now()).days > -7:
-               ep.was_fake()
+   def _process_results(contents, sepis):
+      reader = csv.reader(StringIO(contents))
 
-         if ep.tvrageid in results:
-            ep.newzbinid = results[ep.tvrageid]
+      results = [(int(tr.findall(r[4])[0]), int(r[1])) for r in reader]
+      tvrageids = set(tvid for tvid, nbid in results)
       
+      for ep in sepis:
+         if ep.airs and ep.newzbinid and ep.tvrageid not in tvrageids:
+            if (ep.airs - dt.now()).days > -7:
+               print ep.tvrageid in tvrageids
+               ep.was_fake()
+         
+         if ep.tvrageid in tvrageids:
+            for tvid, nbid in results:
+               if tvid == ep.tvrageid:
+                  ep.newzbinid = nbid
+                  break
+   
    rules = defaultdict(lambda: '')
    rules.update(rdict)
    query = urlencode({ 'searchaction': 'Search',
@@ -281,7 +358,7 @@ def search_newzbin(sepis, rdict):
              'feed': 'csv' })
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query)
-   search.addCallback(process_newzbin_results, (sepis,))
+   search.addCallback(_process_results, sepis)
    return search
 
 def humanize(q):
@@ -322,34 +399,62 @@ def cleanup(showset):
    os.unlink(pidfile)
    showset.save()
 
-def main():
-   if os.path.exists(dbpath):
-      showset = load()
-   else:
-      showset = Collection(config['sets'])
-      print "This was the first run, exiting. You'll probably want to --unwant"\
-            " any episodes you don't want to be fetched next time."
-      return
+def check_pid():
+   if os.path.exists(pidfile):
+      with open(pidfile) as f:
+         pid = f.read()
+      
+      try:
+         os.kill(int(pid), 0)
+      except os.error, err:
+         if err.errno == errno.ESRCH:
+            os.unlink(pidfile)
+      else:
+         return int(pid)
 
+def am_server():
+   pid = check_pid()
+   if pid is None or pid == os.getpid():
+      return True
+   else: return False
+
+def main():
+   if not am_server():
+      showset = ServerProxy('http://localhost:19666/')
+   else:
+      if check_pid():
+         raise SystemExit, 'floamtv is already running.'
+
+      with open(pidfile, "w") as f:
+         f.write("%d" % os.getpid())
+   
+      if os.path.exists(dbpath):
+         showset = load()
+      else:
+         showset = Collection()
+      
    if options.unwant:
       for show in options.unwant.split(' '):
          print showset.unwant(show)
-      
+   
    elif options.rewant:
       for show in options.rewant.split(' '):
          print showset.rewant(show)
-
+   
    elif options.status:
-      showset.print_status()
-
-   else:
-      atexit.register(cleanup, (showset))
+      print showset.status(bool(options.verbose))
       
-      task.LoopingCall(showset.refresh, config['sets']).start(60*5)
-      task.LoopingCall(showset.look_on_newzbin, True).start(60*60*3)
+   elif am_server():
+      atexit.register(cleanup, showset)
       
+      tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'])
+      tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin, True)
+      
+      tasks['tvrage'].start(60 * config['tvrage-interval'])
+      
+      reactor.listenTCP(19666, server.Site(showset))
       reactor.run()
-      
+
 if __name__ == '__main__':
    parser = OptionParser()
    parser.add_option('-u', '--update', action='store_true', dest='updatedb',
