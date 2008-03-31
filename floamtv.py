@@ -3,9 +3,6 @@
 # floamtv.py (Copyright 2008 Aaron Gyes)
 # distributed under the GPLv3. See LICENSE
 
-# Remaining bugs
-#  - Implement attributes for fucks sake!
-
 
 from __future__ import with_statement
 import re, os, csv, yaml, time, sys, errno, atexit
@@ -114,8 +111,10 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
              " ========\n"
       for ep in sorted(self._episodes(), key=lambda e: e.show):
          if ep.wanted or verbose:
-            w = '+' if e.wanted else '-'
-            out += "  (%s) %s\n\t(%s)\n" % (w, e, relative_datetime(e.airs))
+            w = '+' if ep.wanted else '-'
+            out += "  (%s) %s\n\t(%s)\n" % (w, ep, relative_datetime(ep.airs))
+      
+      out += "\n\n  (-) = unwanted, (+) = wanted"
       
       return out
    
@@ -327,7 +326,7 @@ def am_server():
       return True
 
 def at_exit(showset):
-   print "Cleaning shit up."
+   print "Cleanup"
    os.unlink(pidfile)
    showset.save()
 
@@ -501,8 +500,6 @@ if __name__ == '__main__':
       sys.exit()
    
    parser = OptionParser()
-   parser.add_option('-u', '--update', action='store_true', dest='updatedb',
-                     help='update show information from TVRage.')
    parser.add_option('--unwant', dest='unwant',
                      help='Set an episode to not download when available.')
    parser.add_option('--rewant', dest='rewant',
