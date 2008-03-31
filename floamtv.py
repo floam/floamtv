@@ -3,10 +3,8 @@
 # floamtv.py (Copyright 2008 Aaron Gyes)
 # distributed under the GPLv3. See LICENSE
 
-# Remaining bugs:
-#  - Two episdes on probation, they'll both get enqueued as soon as the first.
+# Remaining bugs
 #  - Implement attributes for fucks sake!
-#  - Logging.
 
 
 from __future__ import with_statement
@@ -18,7 +16,7 @@ from twisted.web.client import getPage
 from urllib import urlencode
 from optparse import OptionParser
 from xmlrpclib import ServerProxy
-from datetime import datetime as dt, timedelta
+from datetime import datetime as dt, timedelta as td
 from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
@@ -44,7 +42,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       if sets:
          self.refresh(sets)
    
-   def refresh(self, sets):
+   def refresh(self, sets, _firstrun=False):
       """
       Populate this Collection with new show information from TVRage. Existing
       Shows have new episodes added to them and the rest are updated with new 
@@ -52,7 +50,8 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       [
          { 'rules': { ... }, 'shows': ['Show Name 1', 'Show Name 2'] },
-         { 'rules': { ... }, 'shows': [ ... ] }
+         { 'rules': { ... }, 'shows': [ ... ] },
+         ...
       ]
       
       Rules don't affect this step at all.
@@ -61,7 +60,10 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       print 'Getting new data from TVRage.'
       def _check_for_brand_new_shows(_):
          def _start(x):
-            if not tasks['newzbin'].running:
+            if _firstrun:
+               print "Quitting early to give you a chance to catch up."
+               reactor.stop()
+            elif not tasks['newzbin'].running:
                tasks['newzbin'].start(60*config['newzbin-interval'])
          
          shows = set()
@@ -117,7 +119,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       return out
    
-   def look_on_newzbin(self, iffy=False):
+   def look_on_newzbin(self, allow_probation=False):
       """
       Goes through and does a newzbin search for all wanted episodes. If we can
       resolve a newzbin id for a show we want, we enqueue it with hellanzb.
@@ -126,16 +128,15 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       hours early. This puts them in a state where we will only enqueue them if
       they are still on newzbin in two hours.
       
-      If allowiffy is True, we enqueue episodes even if they're too early.
+      If allow_probation is True, we enqueue episodes even if they're too early.
       """
       
       def _enqueue_new_stuff(results):
-         for ep in self._episodes():
-            if ep.wanted and ep.newzbinid:
-               if ep.airs and (ep.airs-dt.now()) > timedelta(hours=3) and not iffy:
-                  ep.was_fake(sure=False)
-               else:
-                  ep.enqueue(allowiffy=iffy)
+         for e in (ep for ep in self._episodes() if ep.wanted and ep.newzbinid):
+            if e.airs and e.airs-dt.now() > td(hours=3) and not allow_probation:
+               e.was_fake(sure=False)
+            else:
+               e.enqueue(allow_probation)
          self.save()
          
       print 'Looking for new shows on newzbin.'
@@ -218,7 +219,7 @@ class Show(yaml.YAMLObject):
    def _add_episode(self, infodict):
       "Given a dict with TVRage info, create a new Episode in self.episodes"
       
-      if infodict['title']:
+      if infodict['tvrageid']:
          ep = Episode(**infodict)
          if ep.tvrageid:
             self.episodes.append(ep)
@@ -274,13 +275,13 @@ class Episode(yaml.YAMLObject):
       self.newzbinid = None
       self.wanted = True
    
-   def enqueue(self, allowiffy=False):
+   def enqueue(self, allow_probation=False):
       """
       Enqueue episodes that have a Newzbin ID resolved with Hellanzb. If
-      allowiffy is True, don't exclude shows that are on probation.
+      allow_probation is True, don't exclude shows that are on probation.
       """
       
-      if self.newzbinid and self.wanted != 'later' or allowiffy:
+      if self.newzbinid and self.wanted != 'later' or allow_probation:
          try:
             hella = ServerProxy("http://hellanzb:%s@%s:8760"
                            % (config['hellanzb-pass'], config['hellanzb-host']))
@@ -358,7 +359,9 @@ def load():
       return yaml.load(savefile)
 
 def parse_tvrage(text, wecallit):
-   rage = clean = defaultdict(lambda: None)
+   rage = defaultdict(lambda: None)
+   clean = rage.copy()
+   
    if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
@@ -427,6 +430,7 @@ def search_newzbin(sepis, rdict):
    rules.update(rdict)
    query = urlencode({ 'searchaction': 'Search',
              'group': rules['group'],
+             'q': rules['query'],
              'category': 8,
              'u_completions': 9,
              'u_post_states': 2,
@@ -461,8 +465,10 @@ def main():
    
       if os.path.exists(dbpath):
          showset = load()
+         first = False
       else:
          showset = Collection()
+         first = True
       
    if options.unwant:
       for show in options.unwant.split(' '):
@@ -478,7 +484,7 @@ def main():
    elif am_server():
       atexit.register(at_exit, showset)
       
-      tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'])
+      tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'], first)
       tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin, True)
       
       tasks['tvrage'].start(60 * config['tvrage-interval'])
