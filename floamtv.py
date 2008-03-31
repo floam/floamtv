@@ -76,11 +76,14 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
             self.shows.append(new_show)
             return dfrd
          
+         maxcon = min(10, config.get('max-connections') or 3)
+         ds = defer.DeferredSemaphore(tokens=maxcon)
+         
          for s in (z for z in shows if z not in alreadyin):
-            newshow = tvrage_info(s, None)
+            newshow = ds.run(tvrage_info, s, None)
             newshow.addCallback(new_show)
             newshows.append(newshow)
-            
+         
          ns = defer.DeferredList(newshows)
          ns.addCallback(_start)
          ns.addCallback(lambda _: self.save())
@@ -439,6 +442,7 @@ def search_newzbin(sepis, rdict):
              'sort': 'ps_edit_date',
              'order': 'desc',
              'u_post_results_amt': 999,
+             'u_v3_retention': rules['retention'] * 24 * 60 * 60,
              'feed': 'csv' })
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query)
