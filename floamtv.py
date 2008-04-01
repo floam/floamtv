@@ -483,7 +483,7 @@ def search_newzbin(sepis, rdict):
              'u_v3_retention': rules['retention'] * 24 * 60 * 60,
              'feed': 'csv' })
    
-   search = getPage("https://v3.newzbin.com/search/?%s" % query)
+   search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60)
    search.addCallback(_process_results, sepis)
    search.addErrback(print_error)
    return search
@@ -491,7 +491,7 @@ def search_newzbin(sepis, rdict):
 def tvrage_info(show_name, episode):
    episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
-   info = getPage("http://tvrage.com/quickinfo.php?%s" % u)
+   info = getPage("http://tvrage.com/quickinfo.php?%s" % u, timeout=60)
    info.addCallback(parse_tvrage, show_name, episode != '')
    info.addErrback(print_error)
    return info
