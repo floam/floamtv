@@ -76,7 +76,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
             self.shows.append(new_show)
             return dfrd
          
-         maxcon = min(10, config.get('max-connections') or 3)
+         maxcon = min(10, int(config.get('max-connections')) or 3)
          ds = defer.DeferredSemaphore(tokens=maxcon)
          
          for s in (z for z in shows if z not in alreadyin):
@@ -87,7 +87,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          ns = defer.DeferredList(newshows)
          ns.addCallback(_start)
          ns.addCallback(lambda _: self.save())
-         
+                  
          return ns
             
       if tasks.has_key('newzbin') and tasks['newzbin'].running:
@@ -97,6 +97,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       for show in self.shows:
          ashow = tvrage_info(show.title, None)
          ashow.addCallback(show.update)
+         ashow.addErrback(print_error)
          pageinfos.append(ashow)
          
       pageinfos = defer.DeferredList(pageinfos)
@@ -150,6 +151,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       searches = defer.DeferredList(dfrds)
       searches.addCallback(_enqueue_new_stuff)
+      searches.addErrback(print_error)
    
    def unwant(self, floamid):
       """
@@ -346,6 +348,9 @@ def check_pid():
       else:
          return int(pid)
 
+def print_error(error):
+   print "An error has occurerd: %s" % error
+
 def humanize(q):
    'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
    if q < 0: raise ValueError, 'must supply a positive integer'
@@ -362,7 +367,6 @@ def load():
 
 def parse_tvrage(text, wecallit):
    rage = defaultdict(lambda: None)
-   clean = rage.copy()
    
    if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
@@ -371,7 +375,7 @@ def parse_tvrage(text, wecallit):
       part = line.split('@')
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
-   clean.update({
+   clean = defaultdict(lambda: None, {
       'wecallit': wecallit,
       'title': rage['Show Name'],
       'next': rage['Next Episode'][0] if rage['Next Episode'] else None,
@@ -428,8 +432,7 @@ def search_newzbin(sepis, rdict):
                   ep.newzbinid = nbid
                   break
    
-   rules = defaultdict(lambda: '')
-   rules.update(rdict)
+   rules = defaultdict(lambda: '', rdict)
    query = urlencode({ 'searchaction': 'Search',
              'group': rules['group'],
              'q': rules['query'],
@@ -447,6 +450,7 @@ def search_newzbin(sepis, rdict):
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query)
    search.addCallback(_process_results, sepis)
+   search.addErrback(print_error)
    return search
 
 def tvrage_info(show_name, episode):
@@ -454,6 +458,7 @@ def tvrage_info(show_name, episode):
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u)
    info.addCallback(parse_tvrage, show_name)
+   info.addErrback(print_error)
    return info
 
 def main():
