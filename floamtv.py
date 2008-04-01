@@ -71,10 +71,11 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          newshows = []
          
          def new_show(info):
-            new_show = Show(info['wecallit'])
-            dfrd = new_show.update(info)
-            self.shows.append(new_show)
-            return dfrd
+            if info:
+               new_show = Show(info['wecallit'])
+               dfrd = new_show.update(info)
+               self.shows.append(new_show)
+               return dfrd
          
          maxcon = min(10, int(config.get('max-connections')) or 3)
          ds = defer.DeferredSemaphore(tokens=maxcon)
@@ -236,7 +237,7 @@ class Show(yaml.YAMLObject):
       to self.episodes. If we already know about the show we won't do anything.
       """
       
-      if episode and episode not in (e.number for e in self.episodes):
+      if episode not in (e.number for e in self.episodes):
          newepisode = tvrage_info(self.title, episode)
          newepisode.addCallback(self._add_episode)
          return newepisode
@@ -246,6 +247,8 @@ class Show(yaml.YAMLObject):
       Given a dict with TVRage information on this show, try to add both the
       latest episode and the upcoming episode to this Show.
       """
+      if not rageinfo: return None
+      
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
       cbs = [self.add(ep) for ep in rcnt]
@@ -290,12 +293,15 @@ class Episode(yaml.YAMLObject):
             hella = ServerProxy("http://hellanzb:%s@%s:8760"
                            % (config['hellanzb-pass'], config['hellanzb-host']))
             hella.enqueuenewzbin(self.newzbinid)
+         
          except:
             print "Unable to enqueue %s" % self
             return False
-                     
-         print "Enqueued %s" % self
-         self.wanted = False
+            
+         else:
+            print "Enqueued %s" % self
+            self.wanted = False
+            
    
    def was_fake(self, sure=True):
       """
@@ -366,27 +372,25 @@ def load():
       return yaml.load(savefile)
 
 def parse_tvrage(text, wecallit):
-   rage = defaultdict(lambda: None)
-   
    if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
+   rage = {}
    for line in text.splitlines():
       part = line.split('@')
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
-   clean = defaultdict(lambda: None, {
-      'wecallit': wecallit,
-      'title': rage['Show Name'],
-      'next': rage['Next Episode'][0] if rage['Next Episode'] else None,
-      'latest': rage['Latest Episode'][0] if rage['Latest Episode'] else None })
+   if not rage.has_key('Episode URL'): return None
    
-   if rage['Episode URL']:
-      clean.update({ 'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
-                     'number': rage['Episode Info'][0],
-                     'title': rage['Episode Info'][1],
-                     'airs': "%s; %s" % (rage['Episode Info'][2],
-                                                              rage['Airtime'])})
+   clean = { 'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
+             'wecallit': wecallit,
+             'title':  rage['Show Name'],
+             'next':   rage['Next Episode'] and rage['Next Episode'][0],
+             'latest': rage['Latest Episode'] and rage['Latest Episode'][0],
+             'number': rage['Episode Info'][0],
+             'title':  rage['Episode Info'][1],
+             'airs': "%s; %s" % (rage['Episode Info'][2], rage['Airtime']) }
+   
    try:
       clean['airs'] = dt.strptime(clean['airs'], "%d/%b/%Y; %A, %I:%M %p")
    except:
@@ -432,7 +436,7 @@ def search_newzbin(sepis, rdict):
                   ep.newzbinid = nbid
                   break
    
-   rules = defaultdict(lambda: '', rdict)
+   rules = defaultdict(str, rdict)
    query = urlencode({ 'searchaction': 'Search',
              'group': rules['group'],
              'q': rules['query'],
