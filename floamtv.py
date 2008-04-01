@@ -5,17 +5,15 @@
 #
 # TODO:
 #  - Daemonize with -D
-#  - Shortcut to unwant everything already aired
-#  - 
 
 from __future__ import with_statement
 import re, os, csv, yaml, time, sys, errno, atexit
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from twisted.web import xmlrpc, server
+from twisted.python import usage
 from twisted.web.client import getPage
 from urllib import urlencode
-from optparse import OptionParser
 from xmlrpclib import ServerProxy
 from datetime import datetime as dt, timedelta as td
 from collections import defaultdict
@@ -81,7 +79,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
                self.shows.append(new_show)
                return dfrd
          
-         maxcon = min(10, int(config.get('max-connections')) or 3)
+         maxcon = min(10, int(config.get('max-connections') or 3))
          ds = defer.DeferredSemaphore(tokens=maxcon)
          
          for s in (z for z in shows if z not in alreadyin):
@@ -342,6 +340,17 @@ class Episode(yaml.YAMLObject):
                                      humanize(self.tvrageid))
 
 
+class Options(usage.Options):
+   optFlags = [
+      ['verbose', 'v', 'Show superfluous information when possible.'],
+      ['status', 's', 'Show list of currently wanted episodes, and unwanted '\
+                      'episodes if verbose.']
+   ]
+   optParameters = [
+      ['unwant', None, None, 'Set an episode not to download when available'],
+      ['rewant', None, None, 'Set an episode to download when available again'],
+   ]
+
 def am_server():
    "Returns True if there isn't another running instance of floamtv."
    pid = check_pid()
@@ -494,16 +503,16 @@ def main():
          showset = Collection()
          first = True
       
-   if options.unwant:
-      for show in options.unwant.split(' '):
+   if options['unwant']:
+      for show in options['unwant'].split(' '):
          print showset.unwant(show)
    
-   elif options.rewant:
-      for show in options.rewant.split(' '):
+   elif options['rewant']:
+      for show in options['rewant'].split(' '):
          print showset.rewant(show)
    
-   elif options.status:
-      print showset.status(bool(options.verbose))
+   elif options['status']:
+      print showset.status(bool(options['verbose']))
       
    elif am_server():
       atexit.register(at_exit, showset)
@@ -524,17 +533,7 @@ if __name__ == '__main__':
       print 'You need to set up a config file first. See the docs.'
       sys.exit()
    
-   parser = OptionParser()
-   parser.add_option('--unwant', dest='unwant',
-                     help='Set an episode to not download when available.' \
-                     '"ALL" will unwant all wanted shows.')
-   parser.add_option('--rewant', dest='rewant',
-                     help='Set previously unwanted episode to download when ' \
-                     'available.')
-   parser.add_option('-s', '--status', dest='status', action='store_true',
-                     help='Print information and status stuff.')
-   parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
-                     help='Print more information than normal.')
-   options, args = parser.parse_args()
+   options = Options()
+   options.parseOptions()
    
    main()
