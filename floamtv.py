@@ -71,7 +71,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          
          alreadyin = [t.title for t in self.shows]
          newshows = []
-         
+
          def new_show(info):
             if info:
                new_show = Show(info['wecallit'])
@@ -234,7 +234,7 @@ class Show(yaml.YAMLObject):
    def _add_episode(self, infodict):
       "Given a dict with TVRage info, create a new Episode in self.episodes"
       
-      if infodict['tvrageid']:
+      if infodict and infodict.get('tvrageid'):
          ep = Episode(**infodict)
          if ep.tvrageid:
             self.episodes.append(ep)
@@ -392,31 +392,34 @@ def load():
    with open(dbpath, 'r') as savefile:
       return yaml.load(savefile)
 
-def parse_tvrage(text, wecallit):
+def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
       raise Exception, "Show %s does not exist at tvrage." % show_name
    
-   rage = {}
+   rage = defaultdict(lambda: None)
+   
    for line in text.splitlines():
       part = line.split('@')
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
-   if not rage.has_key('Episode URL'): return None
-   
-   clean = { 'tvrageid': int(tr.findall(rage['Episode URL'])[-1]),
-             'wecallit': wecallit,
+   if is_episode and not rage.has_key('Episode URL'): return None
+      
+   clean = { 'wecallit': wecallit,
              'title':  rage['Show Name'],
              'next':   rage['Next Episode'] and rage['Next Episode'][0],
-             'latest': rage['Latest Episode'] and rage['Latest Episode'][0],
-             'number': rage['Episode Info'][0],
-             'title':  rage['Episode Info'][1],
-             'airs': "%s; %s" % (rage['Episode Info'][2], rage['Airtime']) }
+             'latest': rage['Latest Episode'] and rage['Latest Episode'][0] }
    
-   try:
-      clean['airs'] = dt.strptime(clean['airs'], "%d/%b/%Y; %A, %I:%M %p")
-   except:
-      clean['airs'] = None
-   
+   if is_episode:
+      clean['tvrageid'] = int(tr.findall(rage['Episode URL'])[-1])
+      clean['number'] = rage['Episode Info'][0]
+      clean['title'] = rage['Episode Info'][1]
+      
+      try:
+         airs = "%s; %s" % (rage['Episode Info'][2], rage['Airtime'])
+         clean['airs'] = dt.strptime(airs, "%d/%b/%Y; %A, %I:%M %p")
+      except:
+         clean['airs'] = None
+
    return clean
 
 def relative_datetime(date):
@@ -482,7 +485,7 @@ def tvrage_info(show_name, episode):
    episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u)
-   info.addCallback(parse_tvrage, show_name)
+   info.addCallback(parse_tvrage, show_name, episode != '')
    info.addErrback(print_error)
    return info
 
