@@ -2,7 +2,11 @@
 
 # floamtv.py (Copyright 2008 Aaron Gyes)
 # distributed under the GPLv3. See LICENSE
-
+#
+# TODO:
+#  - Daemonize with -D
+#  - Shortcut to unwant everything already aired
+#  - 
 
 from __future__ import with_statement
 import re, os, csv, yaml, time, sys, errno, atexit
@@ -157,9 +161,17 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
    def unwant(self, floamid):
       """
       Given a humanize()'d ID for an episode, set the episode not to enqueue
-      when it becomes available.
+      when it becomes available. 'ALL' will unwant all wanted episodes.
       """
-      try:
+      if floamid == 'ALL':
+         out = ''
+         for ep in self._episodes():
+            if ep.wanted:
+               out += self.unwant(humanize(ep.tvrageid)) + "\n"
+         
+         return out
+      
+      try:      
          if self[floamid].wanted:
             self[floamid].wanted = False
             self[floamid].newzbinid = None
@@ -514,7 +526,8 @@ if __name__ == '__main__':
    
    parser = OptionParser()
    parser.add_option('--unwant', dest='unwant',
-                     help='Set an episode to not download when available.')
+                     help='Set an episode to not download when available.' \
+                     '"ALL" will unwant all wanted shows.')
    parser.add_option('--rewant', dest='rewant',
                      help='Set previously unwanted episode to download when ' \
                      'available.')
