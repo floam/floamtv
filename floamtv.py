@@ -236,21 +236,28 @@ class Show(yaml.YAMLObject):
       
       if infodict and infodict.get('tvrageid'):
          ep = Episode(**infodict)
-         if ep.tvrageid:
+   
+         for gotit in (e for e in self.episodes if e.number == ep.number):
+            if gotit.title != ep.title or gotit.airs != ep.airs:
+               gotit.title = ep.title
+               gotit.airs = ep.airs
+               print "Updated episode: %s" % ep
+            break
+         
+         else:
             self.episodes.append(ep)
             print "New episode: %s" % ep
-   
+
    def add(self, episode):
       """
       Given an episode-number string in the format used by TVRage, ('3x04' being
       season 3, episode 4), look up further information on this show and add it
       to self.episodes. If we already know about the show we won't do anything.
       """
-      
-      if episode not in (e.number for e in self.episodes):
-         newepisode = tvrage_info(self.title, episode)
-         newepisode.addCallback(self._add_episode)
-         return newepisode
+
+      newepisode = tvrage_info(self.title, episode)
+      newepisode.addCallback(self._add_episode)
+      return newepisode
    
    def update(self, rageinfo):
       """
