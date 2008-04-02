@@ -71,7 +71,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          for aset in sets:
             shows.update(set(aset['shows']))
          
-         alreadyin = [t.title for t in self.shows]
+         alreadyin = dict((t.title, t) for t in self.shows)
          newshows = []
 
          def new_show(info):
@@ -84,10 +84,15 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          maxcon = min(10, int(config.get('max-connections') or 3))
          ds = defer.DeferredSemaphore(tokens=maxcon)
          
-         for s in (z for z in shows if z not in alreadyin):
-            newshow = ds.run(tvrage_info, s, None)
-            newshow.addCallback(new_show)
-            newshows.append(newshow)
+         for show in shows.symmetric_difference(alreadyin):
+            if show not in alreadyin:
+               newshow = ds.run(tvrage_info, show, None)
+               newshow.addCallback(new_show)
+               newshows.append(newshow)
+            
+            elif show not in shows:
+               print "Pruning %s" % alreadyin[show]
+               self.shows.remove(alreadyin[show])
          
          ns = defer.DeferredList(newshows)
          ns.addCallback(_start)
@@ -279,6 +284,9 @@ class Show(yaml.YAMLObject):
       return "<Show %s with episodes %s>" \
          % (self.title, (' and ').join(map(str, self.episodes)))
    
+   def __str__(self):
+      return self.title
+   
 
 class Episode(yaml.YAMLObject):
    """
@@ -350,6 +358,9 @@ class Episode(yaml.YAMLObject):
 
 
 class Options(usage.Options):
+   def opt_version(self):
+      print "This is a beta with no discernible version number."
+   
    optFlags = [
       ['verbose', 'v', 'Show superfluous information when possible.'],
       ['status', 's', 'Show list of currently wanted episodes, and unwanted '\
@@ -504,7 +515,7 @@ def main():
    else:
       if check_pid():
          raise SystemExit, 'floamtv is already running.'
-
+      
       with open(pidfile, "w") as f:
          f.write("%d" % os.getpid())
    
@@ -524,7 +535,7 @@ def main():
          print showset.rewant(show)
    
    elif options['status']:
-      print showset.status(bool(options['verbose']))
+      return showset.status(bool(options['verbose']))
       
    elif am_server():
       atexit.register(at_exit, showset)
@@ -548,4 +559,4 @@ if __name__ == '__main__':
    options = Options()
    options.parseOptions()
    
-   main()
+   sys.exit(main())
