@@ -2,9 +2,11 @@
 
 # floamtv.py (Copyright 2008 Aaron Gyes)
 # distributed under the GPLv3. See LICENSE
-#
-# TODO:
-#  - Daemonize with -D
+
+"""
+Run without any arguments to use normally. For usage instructions, check out
+http://aaron.gy/stuff/floamtv
+"""
 
 from __future__ import with_statement
 import re, os, csv, yaml, time, sys, errno, atexit
@@ -275,7 +277,7 @@ class Show(yaml.YAMLObject):
    
    def __repr__(self):
       return "<Show %s with episodes %s>" \
-         % (self.title, ' and '.join(map(str, self.episodes)))
+         % (self.title, (' and ').join(map(str, self.episodes)))
    
 
 class Episode(yaml.YAMLObject):
@@ -393,7 +395,7 @@ def humanize(q):
    while q != 0:
        q, r = divmod(q, 33)
        converted.insert(0, letters[r])
-   return ''.join(converted)
+   return ('').join(converted)
 
 def load():
    with open(dbpath, 'r') as savefile:
@@ -476,7 +478,7 @@ def search_newzbin(sepis, rdict):
              'u_post_states': 2,
              'u_post_larger_than': rules['min-megs'],
              'u_post_smaller_than': rules['max-megs'],
-             'q_url': ' or '.join([str(e.tvrageid) for e in sepis]),
+             'q_url': (' or ').join([str(e.tvrageid) for e in sepis]),
              'sort': 'ps_edit_date',
              'order': 'desc',
              'u_post_results_amt': 999,
