@@ -150,7 +150,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       def _enqueue_new_stuff(results):
          for e in (ep for ep in self._episodes() if ep.wanted and ep.newzbinid):
-            if e.airs and e.airs-dt.now(pytz.utc) > td(hours=1):
+            if e.airs and e.airs > dt.now(pytz.utc):
                if not allow_probation:
                   e.was_fake(sure=False)
             else:
@@ -171,12 +171,12 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
    def unwant(self, floamid):
       """
       Given a humanize()'d ID for an episode, set the episode not to enqueue
-      when it becomes available. 'ALL' will unwant all wanted episodes.
+      when it becomes available. 'aired' will unwant all aired episodes.
       """
-      if floamid == 'ALL':
+      if floamid == 'aired':
          out = ''
          for ep in self._episodes():
-            if ep.wanted:
+            if ep.wanted and ep.airs and ep.airs < dt.now(pytz.utc):
                out += self.unwant(humanize(ep.tvrageid)) + "\n"
          
          return out
@@ -259,7 +259,7 @@ class Show(yaml.YAMLObject):
             if gotit.title != ep.title or gotit.airs != ep.airs:
                gotit.title = ep.title
                gotit.airs = ep.airs
-               print "Updated episode: %s" % ep
+               print "Updated episode: %s" % gotit
             break
          
          else:
@@ -341,6 +341,15 @@ class Episode(yaml.YAMLObject):
             self.wanted = False
             
    
+   def educate(self):
+      """
+      After loading data from YAML, the datetimes will be naive.
+      """
+      try:
+         self.airs = pytz.utc.localize(self.airs)
+      except (AttributeError, ValueError):
+         return
+      
    def was_fake(self, sure=True):
       """
       Call this if we find out a newzbinid for a show is actually pointing at a
@@ -427,7 +436,12 @@ def humanize(q):
 
 def load():
    with open(dbpath, 'r') as savefile:
-      return yaml.load(savefile)
+      ss = yaml.load(savefile)
+      
+      for e in ss._episodes():
+         e.educate()
+      
+      return ss
 
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
@@ -552,7 +566,7 @@ def main():
          print showset.rewant(show)
    
    elif options['status']:
-      return showset.status(bool(options['verbose']))
+      print showset.status(bool(options['verbose']))
       
    elif am_server():
       atexit.register(at_exit, showset)
