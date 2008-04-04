@@ -9,7 +9,7 @@ http://aaron.gy/stuff/floamtv
 """
 
 from __future__ import with_statement
-import re, os, csv, yaml, time, sys, errno, atexit
+import re, os, csv, yaml, time, sys, errno, atexit, pytz, twisted
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from twisted.web import xmlrpc, server
@@ -63,31 +63,35 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          def _start(x):
             if _firstrun:
                print "Quitting early to give you a chance to catch up."
-               reactor.stop()
+               if reactor.running:
+                  reactor.stop()
             elif not tasks['newzbin'].running:
                tasks['newzbin'].start(60*config['newzbin-interval'])
          
          shows = set()
-         for aset in sets:
-            shows.update(set(aset['shows']))
+         tz = {}
          
+         for a in sets:
+            tz.update((s, a.get('timezone', 'US/Eastern')) for s in a['shows'])
+            shows.update(a['shows'])
+
          alreadyin = dict((t.title, t) for t in self.shows)
          newshows = []
 
-         def new_show(info):
+         def new_show(info, timezone):
             if info:
-               new_show = Show(info['wecallit'])
+               new_show = Show(info['wecallit'], timezone)
                dfrd = new_show.update(info)
                self.shows.append(new_show)
                return dfrd
          
-         maxcon = min(10, int(config.get('max-connections') or 3))
+         maxcon = min(10, int(config.get('max-connections', 3)))
          ds = defer.DeferredSemaphore(tokens=maxcon)
          
          for show in shows.symmetric_difference(alreadyin):
             if show not in alreadyin:
                newshow = ds.run(tvrage_info, show, None)
-               newshow.addCallback(new_show)
+               newshow.addCallback(new_show, tz[show])
                newshows.append(newshow)
             
             elif show not in shows:
@@ -137,8 +141,8 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       Goes through and does a newzbin search for all wanted episodes. If we can
       resolve a newzbin id for a show we want, we enqueue it with hellanzb.
       
-      We call episode.was_fake(sure=False) on episodes that are more than three
-      hours early. This puts them in a state where we will only enqueue them if
+      We call episode.was_fake(sure=False) on episodes that are more than one
+      hour early. This puts them in a state where we will only enqueue them if
       they are still on newzbin in two hours.
       
       If allow_probation is True, we enqueue episodes even if they're too early.
@@ -146,8 +150,9 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       def _enqueue_new_stuff(results):
          for e in (ep for ep in self._episodes() if ep.wanted and ep.newzbinid):
-            if e.airs and e.airs-dt.now() > td(hours=3) and not allow_probation:
-               e.was_fake(sure=False)
+            if e.airs and e.airs-dt.now(pytz.utc) > td(hours=1):
+               if not allow_probation:
+                  e.was_fake(sure=False)
             else:
                e.enqueue(allow_probation)
          self.save()
@@ -234,15 +239,21 @@ class Show(yaml.YAMLObject):
    """
    
    yaml_tag = '!Show'
-   def __init__(self, title):
+   def __init__(self, title, timezone):
       self.episodes = []
       self.title = title
-   
-   def _add_episode(self, infodict):
-      "Given a dict with TVRage info, create a new Episode in self.episodes"
+      self.timezone = timezone
       
-      if infodict and infodict.get('tvrageid'):
-         ep = Episode(**infodict)
+   def _add_episode(self, info):
+      "Given a dict with TVRage info, create a new Episode in self.episodes"
+      if not info: return # should go away when we use an errback
+      
+      if info['airs']:
+         local = pytz.timezone(self.timezone)
+         info['airs'] = local.localize(info['airs']).astimezone(pytz.utc)
+      
+      if info and info.get('tvrageid'):
+         ep = Episode(**info)
    
          for gotit in (e for e in self.episodes if e.number == ep.number):
             if gotit.title != ep.title or gotit.airs != ep.airs:
@@ -271,7 +282,7 @@ class Show(yaml.YAMLObject):
       Given a dict with TVRage information on this show, try to add both the
       latest episode and the upcoming episode to this Show.
       """
-      if not rageinfo: return None
+      if not rageinfo: return # should probably raise an exception for errback
       
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
@@ -398,6 +409,12 @@ def check_pid():
 def print_error(error):
    print "An error has occurerd: %s" % error
 
+def getpage_err(err):
+   if err.type is twisted.internet.error.ConnectionLost:
+      pass
+   else:
+      print err
+
 def humanize(q):
    'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
    if q < 0: raise ValueError, 'must supply a positive integer'
@@ -443,10 +460,10 @@ def parse_tvrage(text, wecallit, is_episode):
    return clean
 
 def relative_datetime(date):
-   # taken from <http://odondo.wordpress.com/2007/07/05/>, thanks!
    if date:
-      diff = date.date() - dt.now().date()
-
+      diff = date.date() - dt.now(pytz.utc).date()
+      date -= td(0, time.altzone) if time.daylight else td(0, time.timezone)
+      
       if diff.days == 0:
          return "airs %s today" % date.strftime("%I:%M %p")
       elif diff.days == -1:
@@ -470,7 +487,7 @@ def search_newzbin(sepis, rdict):
       
       for ep in sepis:
          if ep.airs and ep.newzbinid and ep.tvrageid not in tvrageids:
-            if (ep.airs - dt.now()).days > -7:
+            if (ep.airs - dt.now(pytz.utc)).days > -7:
                print ep.tvrageid in tvrageids
                ep.was_fake()
          
@@ -498,7 +515,7 @@ def search_newzbin(sepis, rdict):
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60)
    search.addCallback(_process_results, sepis)
-   search.addErrback(print_error)
+   search.addErrback(getpage_err)
    return search
 
 def tvrage_info(show_name, episode):
@@ -506,7 +523,7 @@ def tvrage_info(show_name, episode):
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u, timeout=60)
    info.addCallback(parse_tvrage, show_name, episode != '')
-   info.addErrback(print_error)
+   info.addErrback(getpage_err)
    return info
 
 def main():
