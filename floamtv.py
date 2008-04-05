@@ -92,6 +92,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          for show in shows.symmetric_difference(alreadyin):
             if show not in alreadyin:
                newshow = ds.run(tvrage_info, show, None)
+               newshow.addErrback(tvrageerr)
                newshow.addCallback(new_show, tz[show])
                newshows.append(newshow)
             
@@ -111,8 +112,8 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       pageinfos = []
       for show in self.shows:
          ashow = tvrage_info(show.title, None)
-         ashow.addCallback(show.update)
-         ashow.addErrback(print_error)
+         ashow.addErrback(tvrageerr)
+         ashow.addCallbacks(show.update, print_error)
          pageinfos.append(ashow)
          
       pageinfos = defer.DeferredList(pageinfos)
@@ -275,13 +276,14 @@ class Show(yaml.YAMLObject):
 
       newepisode = tvrage_info(self.title, episode)
       newepisode.addCallback(self._add_episode)
+      newepisode.addErrback(tvrageerr)
       return newepisode
    
    def update(self, rageinfo):
       """
       Given a dict with TVRage information on this show, try to add both the
       latest episode and the upcoming episode to this Show.
-      """   
+      """
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
       cbs = [self.add(ep) for ep in rcnt]
@@ -424,10 +426,7 @@ def print_error(error):
    print "An error has occurerd: %s" % error
 
 def getpage_err(err):
-   if err.type is twisted.internet.error.ConnectionLost:
-      pass
-   else:
-      print err
+   return err.trap(twisted.internet.error.ConnectionLost)
 
 def humanize(q):
    'Converts number to a base33 format, 0-9,a-z except i,l,o (look like digits)'
@@ -476,7 +475,7 @@ def parse_tvrage(text, wecallit, is_episode):
          clean['airs'] = dt.strptime(airs, "%d/%b/%Y; %A, %I:%M %p")
       except:
          clean['airs'] = None
-
+   
    return clean
 
 def relative_datetime(date):
@@ -485,17 +484,17 @@ def relative_datetime(date):
       date = date.astimezone(localtz)
       
       if diff.days == 0:
-         return "airs %s today" % date.strftime("%I:%M %p")
+         return "airs %s today"      % date.strftime("%I:%M %p")
       elif diff.days == -1:
          return "aired %s yesterday" % date.strftime("%I:%M %p")
       elif diff.days < -1:
-         return "aired on %s" % date.strftime("%m/%d/%Y")
+         return "aired on %s"        % date.strftime("%m/%d/%Y")
       elif diff.days == 1:
-         return "airs %s tomorrow" % date.strftime("%I:%M %p")
+         return "airs %s tomorrow"   % date.strftime("%I:%M %p")
       elif diff.days > -7:
-         return "airs %s" % date.strftime("%I:%M %p %A")
+         return "airs %s"            % date.strftime("%I:%M %p %A")
       else:
-         return "airs on %s" % date.strftime("%m/%d/%Y")
+         return "airs on %s"         % date.strftime("%m/%d/%Y")
    else: return 'Unknown Airtime'
 
 def search_newzbin(sepis, rdict):
@@ -538,25 +537,23 @@ def search_newzbin(sepis, rdict):
    search.addErrback(getpage_err)
    return search
 
-def tvrage_err(err):
-   if err.type is ValueError:
-      return
-   
+def tvrageerr(err):
+   err.trap(ValueError)
+
 def tvrage_info(show_name, episode):
    episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u, timeout=60)
    info.addCallback(parse_tvrage, show_name, episode != '')
-   info.addErrback(tvrage_err)
    info.addErrback(getpage_err)
    return info
 
 def main():
-   if not am_server():
+   if not am_server() and any(options.values()):
       showset = ServerProxy('http://localhost:19666/')
    else:
       if check_pid():
-         raise SystemExit, 'floamtv is already running.'
+         return 'floamtv is already running.'
       
       with open(pidfile, "w") as f:
          f.write("%d" % os.getpid())
@@ -595,8 +592,7 @@ if __name__ == '__main__':
       with open(configpath, 'r') as configuration:
          config = yaml.load(configuration)
    except IOError:
-      print 'You need to set up a config file first. See the docs.'
-      sys.exit()
+      sys.exit('You need to set up a config file first. See the docs.')
    
    options = Options()
    options.parseOptions()
