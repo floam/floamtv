@@ -9,15 +9,16 @@ http://aaron.gy/stuff/floamtv
 """
 
 from __future__ import with_statement
-import re, os, csv, yaml, time, sys, errno, atexit, pytz, twisted
+import re, os, csv, yaml, sys, errno, atexit, pytz, twisted
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
+from pytz.reference import Local as localtz
 from twisted.web import xmlrpc, server
 from twisted.python import usage
 from twisted.web.client import getPage
 from urllib import urlencode
 from xmlrpclib import ServerProxy
-from datetime import datetime as dt, timedelta as td
+from datetime import datetime as dt, timedelta
 from collections import defaultdict
 
 dbpath = os.path.expanduser('~/.floamtvdb2')
@@ -257,8 +258,8 @@ class Show(yaml.YAMLObject):
    
          for gotit in (e for e in self.episodes if e.number == ep.number):
             if gotit.title != ep.title or gotit.airs != ep.airs:
-               gotit.title = ep.title
-               gotit.airs = ep.airs
+               #gotit.title = ep.title
+               #gotit.airs = ep.airs
                print "Updated episode: %s" % gotit
             break
          
@@ -364,9 +365,12 @@ class Episode(yaml.YAMLObject):
             self.newzbinid = None
             self.wanted = True
          elif self.wanted:
-            print "%s is too early. Will confirm in a couple hours." % self
             self.wanted = 'later'
-            reactor.callLater(60*60*2, self.enqueue, True)
+            later = min(timedelta(hours=2), self.airs-dt.now(pytz.utc))
+            latertime = (later + dt.now(localtz)).strftime("%I:%M %p %Z")
+            
+            print "%s is too early. Will try again at %s." % (self, latertime)
+            reactor.callLater(later.seconds, self.enqueue, True)
    
    def __repr__(self):
       return "<Episode %s - %s - %s>" \
@@ -399,6 +403,10 @@ def am_server():
 
 def at_exit(showset):
    print "Cleanup"
+   for e in showset._episodes():
+      if e.wanted == 'later':
+         e.wanted = True
+   
    os.unlink(pidfile)
    showset.save()
 
@@ -476,7 +484,7 @@ def parse_tvrage(text, wecallit, is_episode):
 def relative_datetime(date):
    if date:
       diff = date.date() - dt.now(pytz.utc).date()
-      date -= td(0, time.altzone) if time.daylight else td(0, time.timezone)
+      date = date.astimezone(localtz)
       
       if diff.days == 0:
          return "airs %s today" % date.strftime("%I:%M %p")
@@ -572,7 +580,7 @@ def main():
       atexit.register(at_exit, showset)
       
       tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'], first)
-      tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin, True)
+      tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin)
       
       tasks['tvrage'].start(60 * config['tvrage-interval'])
       
