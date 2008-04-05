@@ -131,10 +131,10 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
              " ========\n"
       for ep in sorted(self._episodes(), key=lambda e: e.show):
          if ep.wanted or verbose:
-            w = '+' if ep.wanted else '-'
+            w = '+' if ep.wanted else ' '
             out += "  (%s) %s\n\t(%s)\n" % (w, ep, relative_datetime(ep.airs))
       
-      out += "\n\n  (-) = unwanted, (+) = wanted"
+      out += "\n  ( ) = unwanted, (+) = wanted"
       
       return out
    
