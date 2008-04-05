@@ -104,7 +104,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          ns.addCallback(lambda _: self.save())
                   
          return ns
-            
+         
       if tasks.has_key('newzbin') and tasks['newzbin'].running:
          tasks['newzbin'].stop()
       
@@ -247,7 +247,6 @@ class Show(yaml.YAMLObject):
       
    def _add_episode(self, info):
       "Given a dict with TVRage info, create a new Episode in self.episodes"
-      if not info: return # should go away when we use an errback
       
       if info['airs']:
          local = pytz.timezone(self.timezone)
@@ -258,8 +257,8 @@ class Show(yaml.YAMLObject):
    
          for gotit in (e for e in self.episodes if e.number == ep.number):
             if gotit.title != ep.title or gotit.airs != ep.airs:
-               #gotit.title = ep.title
-               #gotit.airs = ep.airs
+               gotit.title = ep.title
+               gotit.airs = ep.airs
                print "Updated episode: %s" % gotit
             break
          
@@ -282,9 +281,7 @@ class Show(yaml.YAMLObject):
       """
       Given a dict with TVRage information on this show, try to add both the
       latest episode and the upcoming episode to this Show.
-      """
-      if not rageinfo: return # should probably raise an exception for errback
-      
+      """   
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       
       cbs = [self.add(ep) for ep in rcnt]
@@ -461,8 +458,9 @@ def parse_tvrage(text, wecallit, is_episode):
       part = line.split('@')
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
-   if is_episode and not rage.has_key('Episode URL'): return None
-      
+   if is_episode and not rage.has_key('Episode URL'):
+      raise ValueError, "No episode info."
+   
    clean = { 'wecallit': wecallit,
              'title':  rage['Show Name'],
              'next':   rage['Next Episode'] and rage['Next Episode'][0],
@@ -540,11 +538,16 @@ def search_newzbin(sepis, rdict):
    search.addErrback(getpage_err)
    return search
 
+def tvrage_err(err):
+   if err.type is ValueError:
+      return
+   
 def tvrage_info(show_name, episode):
    episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u, timeout=60)
    info.addCallback(parse_tvrage, show_name, episode != '')
+   info.addErrback(tvrage_err)
    info.addErrback(getpage_err)
    return info
 
