@@ -401,7 +401,6 @@ def am_server():
       return True
 
 def at_exit(showset):
-   print "Cleanup"
    for e in showset._episodes():
       if e.wanted == 'later':
          e.wanted = True
@@ -480,9 +479,9 @@ def parse_tvrage(text, wecallit, is_episode):
 
 def relative_datetime(date):
    if date:
-      diff = date.date() - dt.now(pytz.utc).date()
       date = date.astimezone(localtz)
-      
+      diff = date.date() - dt.now(localtz).date()
+
       if diff.days == 0:
          return "airs %s today"      % date.strftime("%I:%M %p")
       elif diff.days == -1:
@@ -491,7 +490,7 @@ def relative_datetime(date):
          return "aired on %s"        % date.strftime("%m/%d/%Y")
       elif diff.days == 1:
          return "airs %s tomorrow"   % date.strftime("%I:%M %p")
-      elif diff.days > -7:
+      elif diff.days < 7:
          return "airs %s"            % date.strftime("%I:%M %p %A")
       else:
          return "airs on %s"         % date.strftime("%m/%d/%Y")
@@ -529,7 +528,7 @@ def search_newzbin(sepis, rdict):
              'sort': 'ps_edit_date',
              'order': 'desc',
              'u_post_results_amt': 999,
-             'u_v3_retention': rules['retention'] * 24 * 60 * 60,
+             'u_v3_retention': config.get('retention', 200) * 24 * 60 * 60,
              'feed': 'csv' })
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60)
