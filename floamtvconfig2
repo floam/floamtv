@@ -1,0 +1,37 @@
+# Host and password for hellanzb RPC.
+hellanzb-pass: changeme
+hellanzb-host: localhost
+
+# How often we look for new posts on newzbin and new show information on 
+# TVRage in minutes. You might set them higher, but I suggest not lowering
+# them. Both services have banned IPs before for requesting too often.
+
+newzbin-interval: 8
+tvrage-interval: 300
+
+# Your news server's retention in days
+retention: 110
+
+sets:
+  -
+    shows:
+      - Some TV Show
+      - Another TV Show
+      - "This Show: Quoted because it had a colon"
+      - Another show
+    timezone: US/Eastern
+    rules:
+      min-megs: 100
+      max-megs: 805
+      groups:
+        - alt.binaries.tv
+        - alt.binaries.multimedia
+      query:
+  -
+    shows:
+      - A British Show
+    timezone: Europe/London
+    rules:
+      min-megs: 200
+      max-megs: 400
+      groups:

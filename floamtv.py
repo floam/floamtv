@@ -24,6 +24,7 @@ from collections import defaultdict
 dbpath = os.path.expanduser('~/.floamtvdb2')
 configpath = os.path.expanduser('~/.floamtvconfig2')
 pidfile = os.path.expanduser('~/.floamtvpid')
+version = "internal"
 
 tasks = {}
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
@@ -92,8 +93,8 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          for show in shows.symmetric_difference(alreadyin):
             if show not in alreadyin:
                newshow = ds.run(tvrage_info, show, None)
-               newshow.addErrback(tvrageerr)
-               newshow.addCallback(new_show, tz[show])
+               newshow.addCallbacks(new_show, tvrageerr, (tz[show],))
+               newshow.addErrback(getpage_err)
                newshows.append(newshow)
             
             elif show not in shows:
@@ -103,7 +104,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          ns = defer.DeferredList(newshows)
          ns.addCallback(_start)
          ns.addCallback(lambda _: self.save())
-                  
+         
          return ns
          
       if tasks.has_key('newzbin') and tasks['newzbin'].running:
@@ -112,8 +113,9 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       pageinfos = []
       for show in self.shows:
          ashow = tvrage_info(show.title, None)
+         ashow.addCallback(show.update)
          ashow.addErrback(tvrageerr)
-         ashow.addCallbacks(show.update, print_error)
+         ashow.addErrback(getpage_err)
          pageinfos.append(ashow)
          
       pageinfos = defer.DeferredList(pageinfos)
@@ -168,7 +170,6 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       
       searches = defer.DeferredList(dfrds)
       searches.addCallback(_enqueue_new_stuff)
-      searches.addErrback(print_error)
    
    def unwant(self, floamid):
       """
@@ -248,11 +249,9 @@ class Show(yaml.YAMLObject):
       
    def _add_episode(self, info):
       "Given a dict with TVRage info, create a new Episode in self.episodes"
-      
       if info['airs']:
-         local = pytz.timezone(self.timezone)
-         info['airs'] = local.localize(info['airs']).astimezone(pytz.utc)
-      
+            local = pytz.timezone(self.timezone)
+            info['airs'] = local.localize(info['airs']).astimezone(pytz.utc)
       if info and info.get('tvrageid'):
          ep = Episode(**info)
    
@@ -275,8 +274,9 @@ class Show(yaml.YAMLObject):
       """
 
       newepisode = tvrage_info(self.title, episode)
-      newepisode.addCallback(self._add_episode)
-      newepisode.addErrback(tvrageerr)
+      newepisode.addCallbacks(self._add_episode, tvrageerr)
+      newepisode.addErrback(getpage_err)
+
       return newepisode
    
    def update(self, rageinfo):
@@ -285,7 +285,6 @@ class Show(yaml.YAMLObject):
       latest episode and the upcoming episode to this Show.
       """
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
-      
       cbs = [self.add(ep) for ep in rcnt]
       self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted]
       
@@ -382,7 +381,8 @@ class Episode(yaml.YAMLObject):
 
 class Options(usage.Options):
    def opt_version(self):
-      print "This is a beta with no discernible version number."
+      print "floamtv %s" % version
+      sys.exit()
    
    optFlags = [
       ['verbose', 'v', 'Show superfluous information when possible.'],
@@ -420,9 +420,6 @@ def check_pid():
             os.unlink(pidfile)
       else:
          return int(pid)
-
-def print_error(error):
-   print "An error has occurerd: %s" % error
 
 def getpage_err(err):
    return err.trap(twisted.internet.error.ConnectionLost)
@@ -474,7 +471,6 @@ def parse_tvrage(text, wecallit, is_episode):
          clean['airs'] = dt.strptime(airs, "%d/%b/%Y; %A, %I:%M %p")
       except:
          clean['airs'] = None
-   
    return clean
 
 def relative_datetime(date):
@@ -537,14 +533,13 @@ def search_newzbin(sepis, rdict):
    return search
 
 def tvrageerr(err):
-   err.trap(ValueError)
+   return err.trap(ValueError)
 
 def tvrage_info(show_name, episode):
    episode = episode or ''
    u = urlencode({'show': show_name, 'ep': episode})
    info = getPage("http://tvrage.com/quickinfo.php?%s" % u, timeout=60)
    info.addCallback(parse_tvrage, show_name, episode != '')
-   info.addErrback(getpage_err)
    return info
 
 def main():
