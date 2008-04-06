@@ -7,5 +7,9 @@ cp -X LICENSE release
 
 sed -e s/"internal"/`bzr revno`/ floamtv.py > release/floamtv.py
 
-tar -cvvfz -C release release.tar.gz
+cd release
+tar cvvf ../release.tar *
+gzip ../release.tar
+cd ..
+
 rm -r release

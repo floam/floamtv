@@ -13,12 +13,11 @@ tvrage-interval: 300
 retention: 110
 
 sets:
-  -
-    shows:
+  - shows:
       - Some TV Show
       - Another TV Show
       - "This Show: Quoted because it had a colon"
-      - Another show
+      - Super Awesome Rodent Masters
     timezone: US/Eastern
     rules:
       min-megs: 100
@@ -27,11 +26,11 @@ sets:
         - alt.binaries.tv
         - alt.binaries.multimedia
       query:
-  -
-    shows:
+
+  - shows:
       - A British Show
     timezone: Europe/London
     rules:
       min-megs: 200
       max-megs: 400
-      groups:
+      groups: # this can be empty if we don't care
