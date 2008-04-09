@@ -516,13 +516,13 @@ def search_newzbin(sepis, rdict):
    
    rules = defaultdict(str, rdict)
    query = urlencode({ 'searchaction': 'Search',
-             'group': rules['group'],
-             'q': rules['query'],
+             'group': rules['group'] or '',
+             'q': rules['query'] or '',
              'category': 8,
              'u_completions': 9,
              'u_post_states': 2,
-             'u_post_larger_than': rules['min-megs'],
-             'u_post_smaller_than': rules['max-megs'],
+             'u_post_larger_than': rules['min-megs'] or '',
+             'u_post_smaller_than': rules['max-megs'] or '',
              'q_url': (' or ').join([str(e.tvrageid) for e in sepis]),
              'sort': 'ps_edit_date',
              'order': 'desc',
