@@ -130,13 +130,12 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       """
       
       out = "\n Episodes\n"\
-             " ========\n"
+             " ========\n\n"
       for ep in sorted(self._episodes(), key=lambda e: e.show):
          if ep.wanted or verbose:
-            w = '+' if ep.wanted else ' '
-            out += "  (%s) %s\n\t(%s)\n" % (w, ep, relative_datetime(ep.airs))
-      
-      out += "\n  ( ) = unwanted, (+) = wanted"
+            out += "  (%c) %s\n" % ('+' if ep.wanted else ' ', ep)
+            out += "      (%s)\n\n" % relative_datetime(ep.airs)
+      out += "  ( ) = unwanted, (+) = wanted"
       
       return out
    
@@ -445,7 +444,8 @@ def load():
 
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
-      raise Exception, "Show %s does not exist at tvrage." % show_name
+      print "Show %r does not exist at TVRage." % wecallit
+      raise ValueError
    
    rage = defaultdict(lambda: None)
    
@@ -454,7 +454,7 @@ def parse_tvrage(text, wecallit, is_episode):
       rage[part[0]] = part[1].split('^') if '^' in part[1] else part[1]
    
    if is_episode and not rage.has_key('Episode URL'):
-      raise ValueError, "No episode info."
+      raise ValueError
    
    clean = { 'wecallit': wecallit,
              'title':  rage['Show Name'],
@@ -494,10 +494,13 @@ def relative_datetime(date):
 
 def search_newzbin(sepis, rdict):
    def _process_results(contents, sepis):
-      reader = csv.reader(StringIO(contents))
-
-      results = [(int(tr.findall(r[4])[0]), int(r[1])) for r in reader]
-      tvrageids = set(tvid for tvid, nbid in results)
+      rd = csv.reader(StringIO(contents))
+      try:
+         results = [(int((tr.findall(r[4]) or [0])[0]), int(r[1])) for r in rd]
+         tvrageids = set(tvid for tvid, nbid in results)
+      except IndexError:
+         print contents
+         tvrageids = []
       
       for ep in sepis:
          if ep.airs and ep.newzbinid and ep.tvrageid not in tvrageids:

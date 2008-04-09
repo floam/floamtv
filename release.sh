@@ -1,16 +1,16 @@
 #!/bin/sh
 
-mkdir release
-cp -X floamtv.py release
-cp -X floamtvconfig2 release
-cp -X LICENSE release
-cp -X README release
+NAME=floamtv-`bzr revno`
 
-sed -e s/"internal"/`bzr revno`/ floamtv.py > release/floamtv.py
+mkdir ${NAME}
+cp -X floamtv.py ${NAME}
+cp -X floamtvconfig2 ${NAME}
+cp -X LICENSE ${NAME}
+cp -X README ${NAME}
 
-cd release
-tar cvvf ../floamtv-`bzr revno`.tar *
-gzip ../floamtv*.tar
-cd ..
+sed -e s/"internal"/`bzr revno`/ floamtv.py > ${NAME}/floamtv.py
 
-rm -r release
+tar cvvf ${NAME}.tar ${NAME}
+gzip ${NAME}.tar
+
+rm -r ${NAME}
