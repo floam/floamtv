@@ -477,8 +477,9 @@ def parse_tvrage(text, wecallit, is_episode):
       clean['title'] = rage['Episode Info'][1]
       
       try:
-         airs = "%s; %s" % (rage['Episode Info'][2], rage['Airtime'])
-         clean['airs'] = dt.strptime(airs, "%d/%b/%Y; %A, %I:%M %p")
+         d = dt.strptime(rage['Episode Info'][2], "%d/%b/%Y")
+         t = dt.strptime(re.findall(r", (.*)", rage['Airtime'])[0], "%I:%M %p")
+         clean['airs'] = dt.combine(d.date(), t.time())
       except:
          clean['airs'] = None
    return clean
