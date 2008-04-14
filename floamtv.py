@@ -9,12 +9,12 @@ http://aaron.gy/stuff/floamtv
 """
 
 from __future__ import with_statement
-import re, os, csv, yaml, sys, errno, atexit, pytz, twisted
+import re, os, csv, yaml, sys, errno, atexit, pytz, twisted, resource, logging
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from pytz.reference import Local as localtz
 from twisted.web import xmlrpc, server
-from twisted.python import usage
+from twisted.python import usage, log
 from twisted.web.client import getPage
 from urllib import urlencode
 from xmlrpclib import ServerProxy
@@ -60,7 +60,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       Rules don't affect this step at all.
       """
       
-      print 'Getting new data from TVRage.'
+      logging.info('Getting new data from TVRage.')
       def _check_for_brand_new_shows(_):
          def _start(x):
             if _firstrun:
@@ -98,7 +98,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
                newshows.append(newshow)
             
             elif show not in shows:
-               print "Pruning %s" % alreadyin[show]
+               logging.info("Pruning %s" % alreadyin[show])
                self.shows.remove(alreadyin[show])
          
          ns = defer.DeferredList(newshows)
@@ -160,7 +160,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
                e.enqueue(allow_probation)
          self.save()
          
-      print 'Looking for new shows on newzbin.'
+      logging.info('Looking for new shows on newzbin.')
       
       dfrds = []
       for ruleset in config['sets']:
@@ -258,12 +258,12 @@ class Show(yaml.YAMLObject):
             if gotit.title != ep.title or gotit.airs != ep.airs:
                gotit.title = ep.title
                gotit.airs = ep.airs
-               print "Updated episode: %s" % gotit
+               logging.info("Updated episode: %s" % gotit)
             break
          
          else:
             self.episodes.append(ep)
-            print "New episode: %s" % ep
+            logging.info("New episode: %s" % ep)
 
    def add(self, episode):
       """
@@ -331,11 +331,11 @@ class Episode(yaml.YAMLObject):
             hella.enqueuenewzbin(self.newzbinid)
          
          except:
-            print "Unable to enqueue %s" % self
+            logging.error("Unable to enqueue %s" % self)
             return False
             
          else:
-            print "Enqueued %s" % self
+            logging.info("Enqueued %s" % self)
             self.wanted = False
             
    
@@ -358,7 +358,7 @@ class Episode(yaml.YAMLObject):
       """
       if self.wanted != 'later':
          if sure:
-            print "%s was fake. Requeueing." % self
+            logging.warning("%s was fake. Requeueing." % self)
             self.newzbinid = None
             self.wanted = True
          elif self.wanted:
@@ -366,7 +366,8 @@ class Episode(yaml.YAMLObject):
             later = min(timedelta(hours=2), self.airs-dt.now(pytz.utc))
             latertime = (later + dt.now(localtz)).strftime("%I:%M %p %Z")
             
-            print "%s is too early. Will try again at %s." % (self, latertime)
+            logging.warning("%s is too early. Will try again at %s."
+                                                            % (self, latertime))
             reactor.callLater(later.seconds, self.enqueue, True)
    
    def __repr__(self):
@@ -376,7 +377,7 @@ class Episode(yaml.YAMLObject):
    def __str__(self):
       return "%s - %s - %s, [%s]" % (self.show, self.number, self.title,
                                      humanize(self.tvrageid))
-
+   
 
 class Options(usage.Options):
    def opt_version(self):
@@ -384,9 +385,10 @@ class Options(usage.Options):
       sys.exit()
    
    optFlags = [
-      ['verbose', 'v', 'Show superfluous information when possible.'],
-      ['status', 's', 'Show list of currently wanted episodes, and unwanted '\
-                      'episodes if verbose.']
+      ['verbose',   'v', 'Show superfluous information when possible.'],
+      ['status',    's', 'Show list of currently wanted episodes, and unwanted'\
+                         ' episodes if verbose.'],
+      ['daemonize', 'D', 'Causes floamtv to run as a daemon.']
    ]
    optParameters = [
       ['unwant', None, None, 'Set an episode not to download when available'],
@@ -403,9 +405,10 @@ def at_exit(showset):
    for e in showset._episodes():
       if e.wanted == 'later':
          e.wanted = True
-   
+      
    os.unlink(pidfile)
    showset.save()
+
 
 def check_pid():
    if os.path.exists(pidfile):
@@ -419,6 +422,13 @@ def check_pid():
             os.unlink(pidfile)
       else:
          return int(pid)
+
+def daemonize():
+   if os.fork() > 0: sys.exit() 
+   os.chdir('/')
+   os.setsid()
+   os.umask(0)
+   if os.fork() > 0: sys.exit()
 
 def getpage_err(err):
    return err.trap(twisted.internet.error.ConnectionLost)
@@ -444,7 +454,7 @@ def load():
 
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
-      print "Show %r does not exist at TVRage." % wecallit
+      logger.warning("Show %r does not exist at TVRage." % wecallit)
       raise ValueError
    
    rage = defaultdict(lambda: None)
@@ -499,13 +509,11 @@ def search_newzbin(sepis, rdict):
          results = [(int((tr.findall(r[4]) or [0])[0]), int(r[1])) for r in rd]
          tvrageids = set(tvid for tvid, nbid in results)
       except IndexError:
-         print contents
          tvrageids = []
       
       for ep in sepis:
          if ep.airs and ep.newzbinid and ep.tvrageid not in tvrageids:
             if (ep.airs - dt.now(pytz.utc)).days > -7:
-               print ep.tvrageid in tvrageids
                ep.was_fake()
          
          if ep.tvrageid in tvrageids:
@@ -535,6 +543,21 @@ def search_newzbin(sepis, rdict):
    search.addErrback(getpage_err)
    return search
 
+def set_up_logging(where):
+   class ignr(logging.Filter):
+      def filter(self, r): return r.levelname != "INFO"
+   
+   format = "%(asctime)s %(levelname)s: %(message)s" if where else "%(message)s"
+   filename = os.path.expanduser(where) if where else None
+   
+   logging.basicConfig(level=logging.DEBUG, format=format,
+                       datefmt="%b %d %H:%M:%S", filename=filename)
+   
+   twistlog = logging.getLogger('twisted')
+   twistlog.addFilter(ignr())
+   observer = log.PythonLoggingObserver()
+   observer.start()
+   
 def tvrageerr(err):
    return err.trap(ValueError)
 
@@ -546,11 +569,16 @@ def tvrage_info(show_name, episode):
    return info
 
 def main():
+   set_up_logging(config.get('logfile'))
+      
    if not am_server() and any(options.values()):
       showset = ServerProxy('http://localhost:19666/')
    else:
       if check_pid():
          return 'floamtv is already running.'
+
+      if options['daemonize']:
+         daemonize()
       
       with open(pidfile, "w") as f:
          f.write("%d" % os.getpid())
