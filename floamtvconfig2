@@ -7,7 +7,7 @@ hellanzb-host: localhost
 # them. Both services have banned IPs before for requesting too often.
 
 newzbin-interval: 8
-tvrage-interval: 300
+tvrage-interval: 550
 
 # Your news server's retention in days
 retention: 110

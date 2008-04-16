@@ -366,8 +366,8 @@ class Episode(yaml.YAMLObject):
             later = min(timedelta(hours=2), self.airs-dt.now(pytz.utc))
             latertime = (later + dt.now(localtz)).strftime("%I:%M %p %Z")
             
-            logging.warning("%s is too early. Will try again at %s."
-                                                            % (self, latertime))
+            logging.warning("%s is too early. Will try again at %s." % (self,
+                                                                     latertime))
             reactor.callLater(later.seconds, self.enqueue, True)
    
    def __repr__(self):
@@ -429,6 +429,12 @@ def daemonize():
    os.setsid()
    os.umask(0)
    if os.fork() > 0: sys.exit()
+   
+   devnull = os.open(os.devnull, os.O_RDWR)
+   for i in range(3):
+      os.close(i)
+      os.dup2(devnull, i)
+   os.close(devnull)
 
 def getpage_err(err):
    return err.trap(twisted.internet.error.ConnectionLost)
