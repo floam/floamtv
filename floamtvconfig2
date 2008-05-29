@@ -1,3 +1,10 @@
+# Uncomment if we want to keep a log. If it's not set, we just print things
+# to stdout.
+
+#logfile: ~/log-location
+
+
+
 # Host and password for hellanzb RPC.
 hellanzb-pass: changeme
 hellanzb-host: localhost

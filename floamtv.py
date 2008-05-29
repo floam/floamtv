@@ -29,6 +29,26 @@ version = "internal"
 tasks = {}
 tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
 
+defaults = {
+   'config': { 'logfile': None,
+               'max-connections': 3,
+               'hellanzb-pass': 'changeme',
+               'hellanzb-host': 'localhost',
+               'newzbin-interval': 8,
+               'tvrage-interval': 500,
+               'retention': 100,
+               'sets': list() },
+   
+   'set': { 'shows': dict(),
+            'timezone': 'US/Eastern',
+            'rules': dict() },
+   
+   'rules': { 'min-megs': '',
+              'max-megs': '',
+              'groups': '',
+              'query': '' }
+}
+
 class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
    """
    The Collection object holds all our Shows. It also provides functions to
@@ -74,7 +94,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          tz = {}
          
          for a in sets:
-            tz.update((s, a.get('timezone', 'US/Eastern')) for s in a['shows'])
+            tz.update((s, a['timezone']) for s in a['shows'])
             shows.update(a['shows'])
 
          alreadyin = dict((t.title, t) for t in self.shows)
@@ -87,7 +107,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
                self.shows.append(new_show)
                return dfrd
          
-         maxcon = min(10, int(config.get('max-connections', 3)))
+         maxcon = min(10, int(config['max-connections']))
          ds = defer.DeferredSemaphore(tokens=maxcon)
          
          for show in shows.symmetric_difference(alreadyin):
@@ -165,7 +185,8 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       dfrds = []
       for ruleset in config['sets']:
          inset = [e for e in self._episodes() if e.show in ruleset['shows']]
-         dfrds.append(search_newzbin(inset, ruleset['rules']))
+         rdict = dict(defaults['rules'].items() + ruleset['rules'].items())
+         dfrds.append(search_newzbin(inset, rdict))
       
       searches = defer.DeferredList(dfrds)
       searches.addCallback(_enqueue_new_stuff)
@@ -286,7 +307,6 @@ class Show(yaml.YAMLObject):
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       cbs = [self.add(ep) for ep in rcnt]
       self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted]
-      
       return defer.DeferredList([dfrd for dfrd in cbs if dfrd])
    
    def __repr__(self):
@@ -409,7 +429,6 @@ def at_exit(showset):
    os.unlink(pidfile)
    showset.save()
 
-
 def check_pid():
    if os.path.exists(pidfile):
       with open(pidfile) as f:
@@ -435,6 +454,13 @@ def daemonize():
       os.close(i)
       os.dup2(devnull, i)
    os.close(devnull)
+
+def defaultize(D, U):
+   U.update((k, type(D[k])(v)) for k,v in U.items() if k in D)   
+   U.update((k,v) for k,v in D.items() if k not in U)
+   U.update((k, defaultize(v, U[k])) for k,v in D.items() if type(v) is dict)
+   
+   return U
 
 def getpage_err(err):
    return err.trap(twisted.internet.error.ConnectionLost)
@@ -481,10 +507,10 @@ def parse_tvrage(text, wecallit, is_episode):
       clean['tvrageid'] = int(tr.findall(rage['Episode URL'])[-1])
       clean['number'] = rage['Episode Info'][0]
       clean['title'] = rage['Episode Info'][1]
-      
+
       try:
          d = dt.strptime(rage['Episode Info'][2], "%d/%b/%Y")
-         t = dt.strptime(re.findall(r", (.*)", rage['Airtime'])[0], "%I:%M %p")
+         t = dt.strptime(re.findall("(\d\d.*)", rage['Airtime'])[0], "%I:%M %p")
          clean['airs'] = dt.combine(d.date(), t.time())
       except:
          clean['airs'] = None
@@ -529,20 +555,19 @@ def search_newzbin(sepis, rdict):
                   ep.newzbinid = nbid
                   break
    
-   rules = defaultdict(str, rdict)
    query = urlencode({ 'searchaction': 'Search',
-             'group': rules['group'] or '',
-             'q': rules['query'] or '',
+             'group': rdict['groups'] or '',
+             'q': rdict['query'] or '',
              'category': 8,
              'u_completions': 1,
              'u_post_states': 3,
-             'u_post_larger_than': rules['min-megs'] or '',
-             'u_post_smaller_than': rules['max-megs'] or '',
+             'u_post_larger_than': rdict['min-megs'] or '',
+             'u_post_smaller_than': rdict['max-megs'] or '',
              'q_url': (' or ').join([str(e.tvrageid) for e in sepis]),
              'sort': 'ps_edit_date',
              'order': 'desc',
              'u_post_results_amt': 999,
-             'u_v3_retention': config.get('retention', 200) * 24 * 60 * 60,
+             'u_v3_retention': config['retention'] * 24 * 60 * 60,
              'feed': 'csv' })
    
    search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60)
@@ -576,7 +601,7 @@ def tvrage_info(show_name, episode):
    return info
 
 def main():
-   set_up_logging(config.get('logfile'))
+   set_up_logging(config['logfile'])
       
    if not am_server() and any(options.values()):
       showset = ServerProxy('http://localhost:19666/')
@@ -620,13 +645,16 @@ def main():
       reactor.run()
 
 if __name__ == '__main__':
-   try:
-      with open(configpath, 'r') as configuration:
-         config = yaml.load(configuration)
-   except IOError:
-      sys.exit('You need to set up a config file first. See the docs.')
-   
    options = Options()
    options.parseOptions()
+   
+   try:
+      with open(configpath, 'r') as configf:
+         config = dict(defaults['config'].items() + yaml.load(configf).items())
+         ### Come up with like apply_defaults function that goes through and
+         ### hooks all the defaults up ahead of time.
+      
+   except IOError:
+      sys.exit('You need to set up a config file first. See the docs.')
    
    sys.exit(main())
