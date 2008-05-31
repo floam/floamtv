@@ -13,7 +13,7 @@ import re, os, csv, yaml, sys, errno, atexit, pytz, twisted, resource, logging
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from pytz.reference import Local as localtz
-from twisted.web import xmlrpc, server
+from twisted.web import xmlrpc, server, client
 from twisted.python import usage, log
 from twisted.web.client import getPage
 from urllib import urlencode
@@ -62,6 +62,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
    allowNone = False
    def __init__(self, sets=None):
       self.shows = []
+      self.cookies = {}
       if sets:
          self.refresh(sets)
    
@@ -186,7 +187,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       for ruleset in config['sets']:
          inset = [e for e in self._episodes() if e.show in ruleset['shows']]
          rdict = dict(defaults['rules'].items() + ruleset['rules'].items())
-         dfrds.append(search_newzbin(inset, rdict))
+         dfrds.append(search_newzbin(inset, rdict, self.cookies))
       
       searches = defer.DeferredList(dfrds)
       searches.addCallback(_enqueue_new_stuff)
@@ -481,8 +482,30 @@ def load():
       
       for e in ss._episodes():
          e.educate()
-      
+         
       return ss
+
+def login_newzbin(showset):
+   def _logged_in(text, ss, fact):
+      if not 'Error:' in text:
+         ss.cookies = fact.cookies
+         logging.info('Logged in.')
+      else:
+         logging.error('Newzbin username/password incorrect.')
+         print text[:8000]
+         reactor.stop()
+      
+   uri = 'http://v3.newzbin.com/account/login'
+   creds = urlencode({'username': config.get('newzbin-user'),
+                      'password': config.get('newzbin-password')})
+   factory = client.HTTPClientFactory(uri, method='POST', postdata=creds,
+                   headers={'Content-Type':'application/x-www-form-urlencoded'})
+   
+   scheme, host, port, path = client._parse(uri)
+   reactor.connectTCP(host, port, factory)
+   
+   factory.deferred.addCallback(_logged_in, showset, factory)
+   return factory.deferred
 
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
@@ -535,7 +558,7 @@ def relative_datetime(date):
          return "airs on %s"         % date.strftime("%m/%d/%Y")
    else: return 'Unknown Airtime'
 
-def search_newzbin(sepis, rdict):
+def search_newzbin(sepis, rdict, cookies):
    def _process_results(contents, sepis):
       rd = csv.reader(StringIO(contents))
       try:
@@ -570,7 +593,7 @@ def search_newzbin(sepis, rdict):
              'u_v3_retention': config['retention'] * 24 * 60 * 60,
              'feed': 'csv' })
    
-   search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60)
+   search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60, cookies=cookies)
    search.addCallback(_process_results, sepis)
    search.addErrback(getpage_err)
    return search
@@ -639,7 +662,14 @@ def main():
       tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'], first)
       tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin)
       
-      tasks['tvrage'].start(60 * config['tvrage-interval'])
+      def start(*a):
+         tasks['tvrage'].start(60 * config['tvrage-interval'])
+      
+      if not getattr(showset, 'cookies', None):
+         login = login_newzbin(showset)
+         login.addCallback(start)
+      else:
+         start()
       
       reactor.listenTCP(19666, server.Site(showset))
       reactor.run()
