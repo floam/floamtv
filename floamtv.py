@@ -495,7 +495,7 @@ def login_newzbin(showset):
          print text[:8000]
          reactor.stop()
       
-   uri = 'http://v3.newzbin.com/account/login'
+   uri = 'http://newzbin.com/account/login'
    creds = urlencode({'username': config.get('newzbin-user'),
                       'password': config.get('newzbin-password')})
    factory = client.HTTPClientFactory(uri, method='POST', postdata=creds,
@@ -593,7 +593,7 @@ def search_newzbin(sepis, rdict, cookies):
              'u_v3_retention': config['retention'] * 24 * 60 * 60,
              'feed': 'csv' })
    
-   search = getPage("https://v3.newzbin.com/search/?%s" % query, timeout=60, cookies=cookies)
+   search = getPage("https://newzbin.com/search/?%s" % query, timeout=60, cookies=cookies)
    search.addCallback(_process_results, sepis)
    search.addErrback(getpage_err)
    return search
