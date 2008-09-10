@@ -277,9 +277,12 @@ class Show(yaml.YAMLObject):
          ep = Episode(**info)
    
          for gotit in (e for e in self.episodes if e.number == ep.number):
-            if gotit.title != ep.title or gotit.airs != ep.airs:
+            attrs = ['title', 'airs', 'tvrageid']
+            pert = lambda ep: [getattr(ep, attr) for attr in attrs]
+            if ep and gotit and pert(ep) != pert(gotit):
                gotit.title = ep.title
                gotit.airs = ep.airs
+               gotit.tvrageid = ep.tvrageid
                logging.info("Updated episode: %s" % gotit)
             break
          
@@ -398,7 +401,7 @@ class Episode(yaml.YAMLObject):
    def __str__(self):
       return "%s - %s - %s, [%s]" % (self.show, self.number, self.title,
                                      humanize(self.tvrageid))
-   
+      
 
 class Options(usage.Options):
    def opt_version(self):
@@ -487,7 +490,7 @@ def load():
 
 def login_newzbin(showset):
    def _logged_in(text, ss, fact):
-      if not 'Error:' in text:
+      if 'Error:' not in text:
          ss.cookies = fact.cookies
          logging.info('Logged in.')
       else:
@@ -606,11 +609,15 @@ def set_up_logging(where):
    filename = os.path.expanduser(where) if where else None
    
    logging.basicConfig(level=logging.DEBUG, format=format,
-                       datefmt="%b %d %H:%M:%S", filename=filename)
+                       datefmt="%b %d %H:%M:%S", filename=filename,
+                       stream=sys.stdout)
    
    twistlog = logging.getLogger('twisted')
    twistlog.addFilter(ignr())
-   observer = log.PythonLoggingObserver()
+   try:
+      observer = log.PythonLoggingObserver()
+   except NameError:
+      observer = log.DefaultObserver()
    observer.start()
    
 def tvrageerr(err):
@@ -647,14 +654,14 @@ def main():
       
    if options['unwant']:
       for show in options['unwant'].split(' '):
-         print showset.unwant(show)
+         logging.info(showset.unwant(show))
    
    elif options['rewant']:
       for show in options['rewant'].split(' '):
-         print showset.rewant(show)
+         logging.info(showset.rewant(show))
    
    elif options['status']:
-      print showset.status(bool(options['verbose']))
+      logging.info(showset.status(bool(options['verbose'])))
       
    elif am_server():
       atexit.register(at_exit, showset)

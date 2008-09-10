@@ -3,11 +3,13 @@
 
 #logfile: ~/log-location
 
-
-
 # Host and password for hellanzb RPC.
 hellanzb-pass: changeme
 hellanzb-host: localhost
+
+#newzbin user
+newzbin-user: thisisyou
+newzbin-password: password
 
 # How often we look for new posts on newzbin and new show information on 
 # TVRage in minutes. You might set them higher, but I suggest not lowering
