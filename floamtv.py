@@ -412,7 +412,8 @@ class Options(usage.Options):
       ['verbose',   'v', 'Show superfluous information when possible.'],
       ['status',    's', 'Show list of currently wanted episodes, and unwanted'\
                          ' episodes if verbose.'],
-      ['daemonize', 'D', 'Causes floamtv to run as a daemon.']
+      ['daemonize', 'D', 'Causes floamtv to run as a daemon.'],
+      ['shutdown', 'k',  'Quit the running floamtv.']
    ]
    optParameters = [
       ['unwant', None, None, 'Set an episode not to download when available'],
@@ -432,6 +433,7 @@ def at_exit(showset):
       
    os.unlink(pidfile)
    showset.save()
+   logging.info('Graceful exit.')
 
 def check_pid():
    if os.path.exists(pidfile):
@@ -635,6 +637,10 @@ def main():
       
    if not am_server() and any(options.values()):
       showset = ServerProxy('http://localhost:19666/')
+      
+      if options['shutdown']:
+         os.kill(check_pid(), 15)
+      
    else:
       if check_pid():
          return 'floamtv is already running.'
