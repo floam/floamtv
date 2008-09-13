@@ -618,7 +618,7 @@ def set_up_logging(where):
    twistlog.addFilter(ignr())
    try:
       observer = log.PythonLoggingObserver()
-   except NameError:
+   except AttributeError:
       observer = log.DefaultObserver()
    observer.start()
    

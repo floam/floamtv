@@ -6,7 +6,7 @@ mkdir ${NAME}
 cp -X floamtv.py ${NAME}
 cp -X floamtvconfig2 ${NAME}
 cp -X LICENSE ${NAME}
-tail -n +4 ~/Sites/floamshnu/pages/stuff/floamtv.txt > ${NAME}/README
+tail -n +4 ~/Sites/floamshnu/cms/stuff/floamtv.txt > ${NAME}/README
 
 sed -e s/"internal"/`bzr revno`/ floamtv.py > ${NAME}/floamtv.py
 
