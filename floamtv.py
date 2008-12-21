@@ -584,7 +584,7 @@ def search_newzbin(sepis, rdict, cookies):
                   break
    
    query = urlencode({ 'searchaction': 'Search',
-             'group': rdict['groups'] or '',
+             'group': (' or ').join(rdict['groups']) or '',
              'q': rdict['query'] or '',
              'category': 8,
              'u_completions': 1,
