@@ -27,7 +27,7 @@ pidfile = os.path.expanduser('~/.floamtvpid')
 version = "internal"
 
 tasks = {}
-tr = re.compile(r"tvrage\.com/.*/([\d]{4,8})")
+tr = re.compile(r"tvrage\.com/.*/([\d]{4,})")
 
 defaults = {
    'config': { 'logfile': None,
@@ -584,7 +584,7 @@ def search_newzbin(sepis, rdict, cookies):
                   break
    
    query = urlencode({ 'searchaction': 'Search',
-             'group': (' or ').join(rdict['groups']) or '',
+             'group': (' or ').join(rdict['groups']) if rdict['groups'] else '',
              'q': rdict['query'] or '',
              'category': 8,
              'u_completions': 1,
