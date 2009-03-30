@@ -310,7 +310,8 @@ class Show(yaml.YAMLObject):
       """
       rcnt = filter(bool, [rageinfo['latest'], rageinfo['next']])
       cbs = [self.add(ep) for ep in rcnt]
-      self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted]
+      self.episodes = [e for e in self.episodes if e.number in rcnt or e.wanted
+                       or len(rcnt) < 2]
       return defer.DeferredList([dfrd for dfrd in cbs if dfrd])
    
    def __repr__(self):
