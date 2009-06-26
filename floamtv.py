@@ -9,7 +9,8 @@ http://aaron.gy/stuff/floamtv
 """
 
 from __future__ import with_statement
-import re, os, csv, yaml, sys, errno, atexit, pytz, twisted, resource, logging
+import re, os, csv, yaml, sys, errno, atexit, pytz, shutil, resource, logging
+import twisted
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from pytz.reference import Local as localtz
@@ -236,8 +237,10 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       """
       Write the entire Collection to disk (at global dbpath) in YAML format.
       """
-      with open(dbpath, 'w') as savefile:
-         yaml.dump (self, savefile, indent=4, default_flow_style=False)
+      with open(dbpath + '~', 'w') as savefile:
+         yaml.dump(self, savefile, indent=4, default_flow_style=False)
+      
+      shutil.move(dbpath + '~', dbpath)
    
    def _episodes(self):
       for show in self.shows:
