@@ -87,8 +87,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          def _start(x):
             if _firstrun:
                print "Quitting early to give you a chance to catch up."
-               if reactor.running:
-                  reactor.stop()
+               if reactor.running: reactor.stop()
             elif not tasks['newzbin'].running:
                tasks['newzbin'].start(60*config['newzbin-interval'])
          
@@ -96,9 +95,14 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
          tz = {}
          
          for a in sets:
-            tz.update((s, a['timezone']) for s in a['shows'])
-            shows.update(a['shows'])
-
+            try:
+               tz.update((s, a['timezone']) for s in a['shows'])
+               shows.update(a['shows'])
+            except TypeError:
+               if reactor.running: reactor.stop()
+               raise Exception, "You may have a colon in a show name. Shows " \
+                                "with colons need to be enclosed in quotes."
+               
          alreadyin = dict((t.title, t) for t in self.shows)
          newshows = []
 
@@ -534,7 +538,7 @@ def parse_tvrage(text, wecallit, is_episode):
              'title':  rage['Show Name'],
              'next':   rage['Next Episode'] and rage['Next Episode'][0],
              'latest': rage['Latest Episode'] and rage['Latest Episode'][0] }
-   
+
    if is_episode:
       clean['tvrageid'] = int(tr.findall(rage['Episode URL'])[-1])
       clean['number'] = rage['Episode Info'][0]
