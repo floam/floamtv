@@ -590,7 +590,7 @@ def search_newzbin(sepis, rdict):
                                                config.get('newzbin-password')))
    authheader = "Basic %s" % basicauth.strip()
    
-   search = getPage("http://www.newzbin.com/search/?%s" % query, timeout=60,
+   search = getPage("https://www.newzbin.com/search/?%s" % query, timeout=60,
                     headers={"Authorization": authheader})
    search.addCallback(_process_results, sepis)
    search.addErrback(getpage_err)
