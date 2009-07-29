@@ -10,7 +10,7 @@ http://aaron.gy/stuff/floamtv
 
 from __future__ import with_statement
 import re, os, csv, yaml, sys, errno, atexit, pytz, shutil, resource, logging
-import twisted
+import twisted, base64
 from cStringIO import StringIO
 from twisted.internet import reactor, task, defer
 from pytz.reference import Local as localtz
@@ -38,6 +38,8 @@ defaults = {
                'newzbin-interval': 8,
                'tvrage-interval': 500,
                'retention': 100,
+               'port': 19666,
+               'bind': '',
                'sets': list() },
    
    'set': { 'shows': dict(),
@@ -63,7 +65,6 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
    allowNone = False
    def __init__(self, sets=None):
       self.shows = []
-      self.cookies = {}
       if sets:
          self.refresh(sets)
    
@@ -192,7 +193,7 @@ class Collection(yaml.YAMLObject, xmlrpc.XMLRPC):
       for ruleset in config['sets']:
          inset = [e for e in self._episodes() if e.show in ruleset['shows']]
          rdict = dict(defaults['rules'].items() + ruleset['rules'].items())
-         dfrds.append(search_newzbin(inset, rdict, self.cookies))
+         dfrds.append(search_newzbin(inset, rdict))
       
       searches = defer.DeferredList(dfrds)
       searches.addCallback(_enqueue_new_stuff)
@@ -421,7 +422,7 @@ class Options(usage.Options):
       ['status',    's', 'Show list of currently wanted episodes, and unwanted'\
                          ' episodes if verbose.'],
       ['daemonize', 'D', 'Causes floamtv to run as a daemon.'],
-      ['shutdown', 'k',  'Quit the running floamtv.']
+      ['shutdown',  'k',  'Quit the running floamtv.']
    ]
    optParameters = [
       ['unwant', None, None, 'Set an episode not to download when available'],
@@ -498,28 +499,6 @@ def load():
          
       return ss
 
-def login_newzbin(showset):
-   def _logged_in(text, ss, fact):
-      if 'Error:' not in text:
-         ss.cookies = fact.cookies
-         logging.info('Logged in.')
-      else:
-         logging.error('Newzbin username/password incorrect.')
-         print text[:8000]
-         reactor.stop()
-      
-   uri = 'http://newzbin.com/account/login'
-   creds = urlencode({'username': config.get('newzbin-user'),
-                      'password': config.get('newzbin-password')})
-   factory = client.HTTPClientFactory(uri, method='POST', postdata=creds,
-                   headers={'Content-Type':'application/x-www-form-urlencoded'})
-   
-   scheme, host, port, path = client._parse(uri)
-   reactor.connectTCP(host, port, factory)
-   
-   factory.deferred.addCallback(_logged_in, showset, factory)
-   return factory.deferred
-
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
       logger.warning("Show %r does not exist at TVRage." % wecallit)
@@ -571,7 +550,7 @@ def relative_datetime(date):
          return "airs on %s"         % date.strftime("%m/%d/%Y")
    else: return 'Unknown Airtime'
 
-def search_newzbin(sepis, rdict, cookies):
+def search_newzbin(sepis, rdict):
    def _process_results(contents, sepis):
       rd = csv.reader(StringIO(contents))
       try:
@@ -604,9 +583,15 @@ def search_newzbin(sepis, rdict, cookies):
              'order': 'desc',
              'u_post_results_amt': 999,
              'u_v3_retention': config['retention'] * 24 * 60 * 60,
+             'fpn': 'p', 
              'feed': 'csv' })
    
-   search = getPage("https://newzbin.com/search/?%s" % query, timeout=60, cookies=cookies)
+   basicauth = base64.encodestring("%s:%s" % (config.get('newzbin-user'), 
+                                               config.get('newzbin-password')))
+   authheader = "Basic %s" % basicauth.strip()
+   
+   search = getPage("http://www.newzbin.com/search/?%s" % query, timeout=60,
+                    headers={"Authorization": authheader})
    search.addCallback(_process_results, sepis)
    search.addErrback(getpage_err)
    return search
@@ -648,6 +633,9 @@ def main():
       
       if options['shutdown']:
          os.kill(check_pid(), 15)
+   
+      if options['status'] and check_pid():
+         logging.info("Daemon is running.")
       
    else:
       if check_pid():
@@ -682,17 +670,9 @@ def main():
       
       tasks['tvrage'] = task.LoopingCall(showset.refresh, config['sets'], first)
       tasks['newzbin'] = task.LoopingCall(showset.look_on_newzbin)
+      tasks['tvrage'].start(60 * config['tvrage-interval'])
       
-      def start(*a):
-         tasks['tvrage'].start(60 * config['tvrage-interval'])
-      
-      if not getattr(showset, 'cookies', None):
-         login = login_newzbin(showset)
-         login.addCallback(start)
-      else:
-         start()
-      
-      reactor.listenTCP(19666, server.Site(showset))
+      reactor.listenTCP(19666, server.Site(showset), interface=config['bind'])
       reactor.run()
 
 if __name__ == '__main__':
