@@ -34,6 +34,10 @@ defaults = {
    'config': { 'logfile': None,
                'max-connections': 3,
                'hellanzb-pass': 'changeme',
+               'nzbclient': 'hella',
+               'sabnzbd-host': 'localhost',
+               'sabnzbd-port': 8080,
+               'sabnzbd-apikey': 'changeme',
                'hellanzb-host': 'localhost',
                'newzbin-interval': 8,
                'tvrage-interval': 500,
@@ -359,14 +363,35 @@ class Episode(yaml.YAMLObject):
       
       if self.newzbinid and self.wanted != 'later' or allow_probation:
          try:
-            hella = ServerProxy("http://hellanzb:%s@%s:8760"
-                           % (config['hellanzb-pass'], config['hellanzb-host']))
-            hella.enqueuenewzbin(self.newzbinid)
-         
+            if 'hella' in config['usenetclient']:
+            
+               hella = ServerProxy("http://hellanzb:%s@%s:8760"
+                        % (config['hellanzb-pass'], config['hellanzb-host']))
+               hella.enqueuenewzbin(self.newzbinid)
+            
+            elif 'sab' in ['usenetclient']:
+               def _handle_sab(result):
+                  if 'error' in result:
+                     logging.error("Unable to enqueue %s" % self)
+                     logging.error("Reason: %s" % result)
+                     return False
+                     
+               url = urlencode({'mode': 'addid',
+                                'name': self.newzbinid,
+                                'apikey': config['sabnzbd-apikey']})
+
+               url = "http://%s:%s/sabnzbd/api?%s" % (config['sabnzbd-host'],
+                                                      config['sabnzbd-port'], 
+                                                      url)
+               
+               attempt = getPage(url, timeout=60)
+               attempt.addCallback()
+                  
+      
          except:
             logging.error("Unable to enqueue %s" % self)
             return False
-            
+         
          else:
             logging.info("Enqueued %s" % self)
             self.wanted = False
@@ -501,7 +526,7 @@ def load():
 
 def parse_tvrage(text, wecallit, is_episode):
    if text.startswith('No Show Results'):
-      logger.warning("Show %r does not exist at TVRage." % wecallit)
+      logging.warning("Show %r does not exist at TVRage." % wecallit)
       raise ValueError
    
    rage = defaultdict(lambda: None)
