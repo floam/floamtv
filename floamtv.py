@@ -363,13 +363,13 @@ class Episode(yaml.YAMLObject):
       
       if self.newzbinid and self.wanted != 'later' or allow_probation:
          try:
-            if 'hella' in config['usenetclient']:
+            if 'hella' in config['nzbclient']:
             
                hella = ServerProxy("http://hellanzb:%s@%s:8760"
                         % (config['hellanzb-pass'], config['hellanzb-host']))
                hella.enqueuenewzbin(self.newzbinid)
             
-            elif 'sab' in ['usenetclient']:
+            elif 'sab' in ['nzbclient']:
                def _handle_sab(result):
                   if 'error' in result:
                      logging.error("Unable to enqueue %s" % self)
