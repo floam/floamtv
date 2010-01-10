@@ -361,40 +361,46 @@ class Episode(yaml.YAMLObject):
       allow_probation is True, don't exclude shows that are on probation.
       """
       
-      if self.newzbinid and self.wanted != 'later' or allow_probation:
-         try:
-            if 'hella' in config['nzbclient']:
-            
-               hella = ServerProxy("http://hellanzb:%s@%s:8760"
-                        % (config['hellanzb-pass'], config['hellanzb-host']))
-               hella.enqueuenewzbin(self.newzbinid)
-            
-            elif 'sab' in ['nzbclient']:
-               def _handle_sab(result):
-                  if 'error' in result:
-                     logging.error("Unable to enqueue %s" % self)
-                     logging.error("Reason: %s" % result)
-                     return False
-                     
-               url = urlencode({'mode': 'addid',
-                                'name': self.newzbinid,
-                                'apikey': config['sabnzbd-apikey']})
-
-               url = "http://%s:%s/sabnzbd/api?%s" % (config['sabnzbd-host'],
-                                                      config['sabnzbd-port'], 
-                                                      url)
-               
-               attempt = getPage(url, timeout=60)
-               attempt.addCallback()
-                  
+      def _handle_sab(result, ep):
+         if 'error' in result:
+            logging.error("Unable to enqueue %s" % ep)
+            logging.error("Reason: %s" % result)
+         else:
+            logging.info("Enqueued %s" % ep)
+            ep.wanted = False
       
-         except:
-            logging.error("Unable to enqueue %s" % self)
-            return False
+      def _handle_sab_fail(err, ep):
+         logging.error("Unable to enqueue %s" % ep)
+         
+      
+      if self.newzbinid and self.wanted != 'later' or allow_probation:
+         if 'sab' in config['nzbclient']:
+            url = urlencode({'mode': 'addid',
+                             'name': self.newzbinid,
+                             'apikey': config['sabnzbd-apikey']})
+
+            url = "http://%s:%s/sabnzbd/api?%s" % (config['sabnzbd-host'],
+                                                   config['sabnzbd-port'], 
+                                                   url)
+            
+            attempt = getPage(url, timeout=60)
+            attempt.addCallback(_handle_sab, self)
+            attempt.addErrback(_handle_sab_fail, self)
+            
          
          else:
-            logging.info("Enqueued %s" % self)
-            self.wanted = False
+            try:
+               hella = ServerProxy("http://hellanzb:%s@%s:8760"
+                           % (config['hellanzb-pass'], config['hellanzb-host']))
+               hella.enqueuenewzbin(self.newzbinid)
+         
+            except:
+               logging.error("Unable to enqueue %s" % self)
+               return False
+         
+            else:
+               logging.info("Enqueued %s" % self)
+               self.wanted = False
             
    
    def educate(self):
