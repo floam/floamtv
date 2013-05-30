@@ -4,7 +4,7 @@ floamtv.py
 **NOTE: this project was abandoned by me in 2010. I decided to convert my old bzr repo to a git one and put it out there.
 It is certainly broken. It needs some love. The old README follows.**
 
-`floamtv.py` is a tiny Python application that automates downloading recurring
+`floamtv.py` is a robust Python application that automates downloading recurring
 television shows that are tracked by [TVRage] [tvrage] and uploaded to Usenet.
 It requires a membership with [NewzBin] [newzbin], and works with [hellanzb]
 [hellanzb]. It is licensed under the GPLv3.
@@ -27,18 +27,42 @@ Requirements
     - [Twisted] [twisted] (you probably have this)
     - [PyYAML] [pyyaml]
     - [pytz] [pytz]
+    
+ChangeLog
+---------
 
-Download
---------
+###Fixed in 77:
+* Saving is now near-atomic, things going wrong at inopportune times should no
+  longer corrupt `~/.floamtvdb2`.
 
-*Be warned, if you used a version prior to 0.3, it works completely differently
-now! Read everything here! Don't use cron!*
+###Fixed in 76:
+* Less aggressively prune old episodes, should result in duplicates not happening
+  when TVRage does something funny.
+* Fix ID matching, was causing incorrect episodes to be downloaded.
 
-I'll make the bzr repository public soon. For now you can download a tarball:
+###Fixed in 74:
+* A bug caused filtering by group names not to work, with the effect of allowing
+  reports from all groups. This has been fixed.
 
-[floamtv.py 57] [download]
+###Fixed in 73:
+* A bug that caused an `AttributeError` exception on systems with old
+  versions of Twisted has been resolved.
 
-###New in 57:
+###New in 72:
+* Daemonization support with `-D` switch.
+* `--shutdown` command.
+* Handle shows that air every day better.
+* Logs into newzbin using your credentials. Look at the example configuration.
+* Handle cases where the TVRage ID of a show changes.
+* Logging is almost ready but not exposed yet.
+
+###New in 62:
+* Fixed two bugs relating to empty results from Newzbin and shows matching
+  incorrectly. You might not have noticed but you might have had some shows that
+  would not enqueue because we weren't finding them on newzbin even if they
+  were posted.
+
+###New in 60:
 * **Complete rewrite**!
 * New versioning scheme. Version numbers match the bazaar-ng revision number.
 * You can now set different rules on different episodes!
@@ -98,8 +122,31 @@ If you used previous versions of floamtv. Delete all traces of it. Everything
 that started it periodically, everything it installed into `site-packages`. The
 rewritten version is a long-running background process.
 
-You can use `easy_install` for PyYAML, twisted, and pytz. You should already
-have twisted if you're using hellanzb!
+You can use `easy_install` if you have it for PyYAML, twisted, and pytz. You
+should already have twisted if you're using hellanzb!
+
+    joe@computer $ easy_install PyYAML pytz twisted
+
+If you are a hero that was using it prior to version 60, make sure you get rid
+of all traces of the old version.
+
+    joe@computer $ locate floamtv
+    /usr/local/bin/floamtv.py
+    /Library/Python/2.5/site-packages/floamtv-0.24-py2.5.egg
+
+    joe@computer $ rm /usr/local/bin/floamtv.py
+    joe@computer $ rm /Library/Python/2.5/site-packages/floamtv-0.24-py2.5.egg
+
+Install it however you like.
+
+    joe@computer $ tar zxvf floamtv-77.tar.gz
+    floamtv-77/
+    floamtv-77/floamtv.py
+    floamtv-77/floamtvconfig2
+    floamtv-77/LICENSE
+    floamtv-77/README
+    
+    joe@computer $ cp floamtv-77/floamtv.py /usr/local/bin
 
 Once installed, edit the example configuration file with your favorite text
 editor. Fill up the `shows` list with desired shows. Change the hellanzb
@@ -137,15 +184,14 @@ tarball) to `~/.floamtvconfig2`. For reference, here is what it looks like:
           groups:
             - alt.binaries.tv
             - alt.binaries.multimedia
-          query:
 
       - shows:
           - A British Show
         timezone: Europe/London
         rules:
-          min-megs: 200
-          max-megs: 400
-          groups: # this can be empty if we don't care
+          min-megs: 900
+          max-megs: 2500
+          query: "Attr: VideoF~x264"
           
 As you might notice, it's a YAML format. Very easy for a human to edit.
 
@@ -163,7 +209,8 @@ time time you'll use `US/Eastern`.
 You could duplicate one show twice if you for perhaps wanted to download
 both a low-quality and a high-quality 720p version of it.
 
-The `query` field can be used for anything. Most people will use it for [Attribute Searching] [attribute searches].
+The `query` field can be used for anything. Most people will use it for
+[Attribute Searching] [attributes].
 
 Once everything is to your desire,
 
@@ -179,19 +226,19 @@ Here's an example of Joe Blow getting `floamtv.py` going for the first time:
     New episode: Heroes - 02x11 - Powerless, [hcvf]
     Quitting early to give you a chance to catch up.
     
-The first time you run floamtv, after it finished downloading show information
-it will quit. This gives you a chance to get rid of TV shows we already have.
-In floamtv 0.3, we identify shows with the four letter identifier inside the
-brackets. If there are episodes that you either don't want or already have,
-you can tell floamtv that we don't want to download them with `--unwant`.
+The first time you run `floamtv.py`, after it finished downloading show
+information it will quit. This gives you a chance to get rid of TV shows we
+already have. We identify shows with the four letter identifier inside the
+brackets. If there are episodes that you either don't want or already have, you
+can tell floamtv that we don't want to download them with `--unwant`.
 
     joeblow@computer $ floamtv.py --unwant hcvf
     Will not download Heroes - 02x11 - Powerless, [hcvf] when available.
 
-A cute shortcut, if you just want to `--uwnant` everything that's already aired
+A cute shortcut, if you just want to `--unwant` everything that's already aired
 is to `--unwant aired`.
 
-We can check the status using `--status` or `-s`. (`--verbose` or `v` will
+We can check the status using `--status` or `-s`. (`--verbose` or `-v` will
 include unwanted shows):
 
     joeblow@computer $ floamtv.py -sv
@@ -218,7 +265,7 @@ getting wrong matches.
 One big problem are fake posts. Spammers on usenet will often post things that
 look like real releases, but turn out to be winzix garbage and similar. It's a
 tough problem because if it's been posted to newzbin, it's really tough to get
-around. Here's what `floamtv.py` does to combat this.
+around. Here's what `floamtv.py` does to combat this:
 
 * If a TV show we downloaded earlier has now been deleted from NewzBin, we
   assume it was fake and start trying to get it again.
@@ -236,11 +283,10 @@ around. Here's what `floamtv.py` does to combat this.
 There are likely bugs in both this documentation and `floamtv`. I will be very
 grateful if you clue me in on any you come across.
 
-[download]: /static/floamtv-0.24.tar.gz
 [tvrage]: http://tvrage.com
 [twisted]: http://twistedmatrix.com
 [newzbin]: http://v3.newzbin.com
 [hellanzb]: http://hellanzb.com
 [pytz]: http://pytz.sourceforge.net/
 [pyyaml]: http://pyyaml.org/wiki/PyYAML
-[attribute searches]: http://docs.newzbin.com/index.php/Newzbin:V3_Search#v3_Attribute_Searches
+[attributes]: http://docs.newzbin.com/index.php/Newzbin:V3_Search#v3_Attribute_Searches
