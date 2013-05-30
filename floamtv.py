@@ -371,7 +371,6 @@ class Episode(yaml.YAMLObject):
       
       def _handle_sab_fail(err, ep):
          logging.error("Unable to enqueue %s" % ep)
-         
       
       if self.newzbinid and self.wanted != 'later' or allow_probation:
          if 'sab' in config['nzbclient']:
@@ -590,16 +589,11 @@ def search_newzbin(sepis, rdict):
       except IndexError:
          tvrageids = []
       
-      for ep in sepis:
-         if ep.airs and ep.newzbinid and ep.tvrageid not in tvrageids:
-            if (ep.airs - dt.now(pytz.utc)).days > -7:
-               ep.was_fake()
-         
-         if ep.tvrageid in tvrageids:
-            for tvid, nbid in results:
-               if tvid == ep.tvrageid:
-                  ep.newzbinid = nbid
-                  break
+      for ep in (e for e in sepis if e.tvrageid in tvrageids):
+         for tvid, nbid in results:
+            if tvid == ep.tvrageid:
+               ep.newzbinid = nbid
+               break
    
    query = urlencode({ 'searchaction': 'Search',
              'group': (' or ').join(rdict['groups']) if rdict['groups'] else '',
