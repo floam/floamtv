@@ -1,6 +1,9 @@
 floamtv.py
 ==========
 
+**NOTE: this project was abandoned by me in 2010. I decided to convert my old bzr repo to a git one and put it out there.
+It is certainly broken. It needs some love. The old README follows.**
+
 `floamtv.py` is a tiny Python application that automates downloading recurring
 television shows that are tracked by [TVRage] [tvrage] and uploaded to Usenet.
 It requires a membership with [NewzBin] [newzbin], and works with [hellanzb]
